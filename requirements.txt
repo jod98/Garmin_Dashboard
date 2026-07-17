@@ -1,0 +1,6 @@
+streamlit>=1.36
+garminconnect>=0.2.19
+garth>=0.4.44
+pandas>=2.2
+plotly>=5.22
+python-dateutil>=2.9
