@@ -1,7 +1,7 @@
 """
-Performance & Health Dashboard (Mobile-First 2x3 & 2x2 Fixed Grids)
+Performance & Health Dashboard (Mobile-First Fixed 2x3 & 2x2 Grids)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
-from Garmin Connect with forced custom grid rendering.
+from Garmin Connect with clean inline HTML structure.
 """
 
 import datetime as dt
@@ -51,7 +51,7 @@ h1 {{
     padding-right: 0.6rem !important;
 }}
 
-/* Unbending Custom Grid Matrix Rules for Mobile Screens */
+/* Custom Fixed Grid Overrides for Mobile Viewports */
 .snapshot-grid {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -75,6 +75,7 @@ h1 {{
     flex-direction: column;
     justify-content: space-between;
     min-height: 72px;
+    box-sizing: border-box;
 }}
 
 .kpi-label {{
@@ -118,6 +119,7 @@ h1 {{
     border: 1px solid #253552;
     border-radius: 6px;
     padding: 8px;
+    box-sizing: border-box;
 }}
 .activity-date {{
     font-family: 'Space Grotesk', sans-serif;
@@ -244,14 +246,9 @@ def pace_min_per_km(distance_m, duration_s):
     return f"{mn}:{s:02d}/km"
 
 
+# Must be a clean, completely flat single-line string to avoid markdown code-fencing leaks
 def build_kpi_html(label, value, sub=""):
-    return f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        <div class="kpi-sub">{sub}</div>
-    </div>
-    """
+    return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>'
 
 
 def sport_tab(df, sport_key, start_of_week, end_of_week):
@@ -264,15 +261,13 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
     avg_hr = round(avg_hr_series.mean(), 0) if not avg_hr_series.empty else "-"
     best_dist = this_week_df["distance_km"].max() if not this_week_df.empty else 0.0
 
-    # Fixed 2x2 Grid for Activity summary metrics
-    grid_html = f"""
-    <div class="activity-totals-grid">
-        {build_kpi_html("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")}
-        {build_kpi_html("Total Time", sec_to_hms(total_time))}
-        {build_kpi_html("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")}
-        {build_kpi_html("Longest Session", f"{best_dist:.1f} km")}
-    </div>
-    """
+    # Flat, compressed layout strings
+    card1 = build_kpi_html("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")
+    card2 = build_kpi_html("Total Time", sec_to_hms(total_time))
+    card3 = build_kpi_html("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")
+    card4 = build_kpi_html("Longest Session", f"{best_dist:.1f} km")
+    
+    grid_html = f'<div class="activity-totals-grid">{card1}{card2}{card3}{card4}</div>'
     st.markdown(grid_html, unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">This Week: Activities</div>', unsafe_allow_html=True)
@@ -280,21 +275,11 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
     if not this_week_df.empty:
         sorted_week_df = this_week_df.sort_values("date", ascending=False)
         
-        # Fixed 2x2 grid rendering for the logs
         logs_html = '<div class="activity-totals-grid">'
         for _, row in sorted_week_df.iterrows():
             date_label = row["date"].strftime("%a, %b %d")
             pace_line = f'<div class="activity-pace">Pace: {row["pace"]}</div>' if row["pace"] != "-" else ""
-            logs_html += f"""
-            <div class="activity-card">
-                <div class="activity-date">{date_label}</div>
-                <div class="activity-metrics">
-                    <strong>{row['distance_km']:.2f} km</strong>
-                    <span>{row['duration_hms']}</span>
-                </div>
-                {pace_line}
-            </div>
-            """
+            logs_html += f'<div class="activity-card"><div class="activity-date">{date_label}</div><div class="activity-metrics"><strong>{row["distance_km"]:.2f} km</strong><span>{row["duration_hms"]}</span></div>{pace_line}</div>'
         logs_html += "</div>"
         st.markdown(logs_html, unsafe_allow_html=True)
     else:
@@ -417,20 +402,19 @@ if isinstance(training_status, dict):
     load_val = metrics_status.get("trainingLoad", "-")
 
 # --------------------------------------------------------------------------
-# TODAY'S SNAPSHOT (STRICT HTML MOBILE-SAFE 2x3 CONSTRAINED MATRIX)
+# TODAY'S SNAPSHOT (STRICT MOBILE-SAFE 2x3 CONSTRAINED MATRIX)
 # --------------------------------------------------------------------------
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
-snapshot_html = f"""
-<div class="snapshot-grid">
-    {build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)}
-    {build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")}
-    {build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")}
-    {build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")}
-    {build_kpi_html("Sleep", f"{sleep_string}", f"Score: {sleep_score}")}
-    {build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")}
-</div>
-"""
+# Combine into a single completely flat string with zero line-breaks or margins
+c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
+c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
+c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")
+c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")
+c5 = build_kpi_html("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
+c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")
+
+snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
 
 
