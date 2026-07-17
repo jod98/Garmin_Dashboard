@@ -544,7 +544,3 @@ with tab_health:
         st.caption("Training status not available.")
 
 st.divider()
-st.caption(
-    "Built with Streamlit + garminconnect. Data reflects your Garmin Connect account "
-    "and refreshes automatically every 15 minutes while the app is open."
-)
