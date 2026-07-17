@@ -222,11 +222,15 @@ def fetch_training_status(_client, date_str):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+def fetch_user_profile(_client):
+    try:
+        return _client.get_user_profile()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_max_metrics_with_lookback(_client, base_date):
-    """
-    Looks back up to 30 days sequentially to locate the most recent populated 
-    Max Metrics dictionary that contains verified numerical VO2 max items.
-    """
     for offset in range(30):
         target_date_str = (base_date - timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
@@ -235,7 +239,6 @@ def fetch_max_metrics_with_lookback(_client, base_date):
                 entries = res if isinstance(res, list) else [res]
                 for entry in entries:
                     if isinstance(entry, dict):
-                        # Ensure this targeted date actually has a meaningful payload
                         keys_to_verify = [
                             "vo2MaxValue", "vo2Max", "vo2MaxGenericValue", 
                             "genericValue", "splitVO2MaxEntries", 
@@ -346,8 +349,9 @@ stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
+user_profile = fetch_user_profile(client)
 
-# Use our updated 30-day lookback validator wrapper for the Max Metrics endpoint
+# Use our 30-day lookback wrapper explicitly for the Max Metrics endpoint
 max_metrics = fetch_max_metrics_with_lookback(client, today)
 
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
@@ -384,6 +388,7 @@ for a in raw_activities:
             "duration_s": duration_s,
             "duration_hms": sec_to_hms(duration_s),
             "avg_hr": a.get("averageHR"),
+            "v02": a.get("vVO2MaxValue"), # Trace historical markers if attached
             "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
         }
     )
@@ -392,48 +397,51 @@ df = pd.DataFrame(records)
 
 
 # --------------------------------------------------------------------------
-# DATA PARSING & EXTRACTION
+# DATA PARSING & EXTRACTION (WITH DEEP PROFILE FALLBACKS)
 # --------------------------------------------------------------------------
 
-# 1. Extract VO2 Max values out of the processed Max Metrics dataset
 vo2_max_val = "-"
 status_label = "Active"  # Base default state string fallback
+vo2_raw = None
 
-# Flatten out any wrapped lists or entries to grab a clean lookup dictionary
-metric_entries = []
-if isinstance(max_metrics, list):
-    metric_entries = max_metrics
-elif isinstance(max_metrics, dict):
-    metric_entries = [max_metrics]
+# STRATEGY 1: Attempt extraction from user profile properties (Most reliable backup)
+if isinstance(user_profile, dict):
+    vo2_raw = user_profile.get("vO2Max") or user_profile.get("vo2Max")
 
-for entry in metric_entries:
-    if not isinstance(entry, dict):
-        continue
-        
-    # Pool every possible nested property key Garmin has historically used for VO2 Max
-    possible_keys = ["vo2MaxValue", "vo2Max", "vo2MaxGenericValue", "genericValue"]
-    for k in possible_keys:
-        if entry.get(k):
-            vo2_raw = entry.get(k)
-            break
-            
-    # Hunt inside the standard inner structures if not found at root level
-    if not entry.get("vo2MaxValue") and "genericEntries" in entry:
-        g_entries = entry["genericEntries"]
-        if isinstance(g_entries, list) and len(g_entries) > 0:
-            vo2_raw = g_entries[0].get("vo2Max") or g_entries[0].get("vo2MaxValue")
-            
-    # Hunt specifically inside localized sport lists (e.g. running or cycling arrays)
-    for sport_key in ["splitVO2MaxEntries", "runningVO2MaxEntries", "cyclingVO2MaxEntries"]:
-        if sport_key in entry and isinstance(entry[sport_key], list) and len(entry[sport_key]) > 0:
-            vo2_raw = entry[sport_key][0].get("vo2MaxValue") or entry[sport_key][0].get("vo2Max")
+# STRATEGY 2: Trace recent running activities with embedded VO2 fields if Strategy 1 was empty
+if (vo2_raw is None or vo2_raw == "-") and not df.empty:
+    valid_activity_vo2 = df[df["v02"].notna() & (df["v02"] != "-")]
+    if not valid_activity_vo2.empty:
+        vo2_raw = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["v02"]
 
-# Safely parse and round the discovered data point
-if 'vo2_raw' in locals() and vo2_raw is not None:
-    if isinstance(vo2_raw, (int, float)):
-        vo2_max_val = int(round(vo2_raw))
-    elif str(vo2_raw).replace('.', '', 1).isdigit():
-        vo2_max_val = int(round(float(vo2_raw)))
+# STRATEGY 3: Standard metrics lookup endpoint fallback loop
+if vo2_raw is None or vo2_raw == "-":
+    metric_entries = max_metrics if isinstance(max_metrics, list) else [max_metrics]
+    for entry in metric_entries:
+        if not isinstance(entry, dict):
+            continue
+        possible_keys = ["vo2MaxValue", "vo2Max", "vo2MaxGenericValue", "genericValue"]
+        for k in possible_keys:
+            if entry.get(k):
+                vo2_raw = entry.get(k)
+                break
+        if not entry.get("vo2MaxValue") and "genericEntries" in entry:
+            g_entries = entry["genericEntries"]
+            if isinstance(g_entries, list) and len(g_entries) > 0:
+                vo2_raw = g_entries[0].get("vo2Max") or g_entries[0].get("vo2MaxValue")
+        for sport_key in ["splitVO2MaxEntries", "runningVO2MaxEntries", "cyclingVO2MaxEntries"]:
+            if sport_key in entry and isinstance(entry[sport_key], list) and len(entry[sport_key]) > 0:
+                vo2_raw = entry[sport_key][0].get("vo2MaxValue") or entry[sport_key][0].get("vo2Max")
+
+# Safely parse and convert the discovered target point
+if vo2_raw is not None and vo2_raw != "-":
+    try:
+        if isinstance(vo2_raw, (int, float)):
+            vo2_max_val = int(round(vo2_raw))
+        elif str(vo2_raw).replace('.', '', 1).isdigit():
+            vo2_max_val = int(round(float(vo2_raw)))
+    except Exception:  # noqa: BLE001
+        pass
 
 # 2. Resilient Training Status extraction
 if isinstance(training_status, dict) and training_status:
@@ -447,16 +455,13 @@ if isinstance(training_status, dict) and training_status:
         ct_status = training_status.get("computedTrainingStatus")
         if ct_status:
             status_label = str(ct_status).title()
-            
-    if isinstance(training_status, str):
-        status_label = training_status
 else:
     if vo2_max_val != "-":
         status_label = "Productive"
     else:
         status_label = "No Data"
 
-# Clean up string formatting (e.g., "PRODUCTIVE_TRAINING" -> "Productive Training")
+# Clean up string formatting
 status_label = str(status_label).replace("_", " ").title()
 
 # 3. Parse remaining daily vital stats
