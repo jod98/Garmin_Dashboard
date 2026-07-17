@@ -425,11 +425,10 @@ with c4:
 with c5:
     load_val = "-"
     if isinstance(training_status, dict):
-        load_val = (
-            training_status.get("mostRecentTrainingLoadBalance", {})
-            .get("metricsTrainingStatus", {})
-            .get("trainingLoad", "-")
-        )
+        # Defensively look up nested fields using fallbacks so it doesn't break if keys are missing
+        load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
+        metrics_status = load_balance.get("metricsTrainingStatus") or {}
+        load_val = metrics_status.get("trainingLoad", "-")
     kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
 
 # --------------------------------------------------------------------------
