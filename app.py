@@ -37,50 +37,61 @@ html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
 
+/* Ultra-compact title sizing */
 h1 {{
     font-family: 'Space Grotesk', sans-serif !important;
-    font-size: 1.5rem !important; 
+    font-size: 1.15rem !important; 
     font-weight: 700 !important;
-    margin-bottom: 0.25rem !important;
+    margin-top: 0rem !important;
+    margin-bottom: 0.1rem !important;
+    white-space: nowrap !important;
+    line-height: 1.1 !important;
 }}
 
+/* Tightened block container paddings */
 .block-container {{
-    padding-top: 1rem !important;
-    padding-bottom: 2rem !important;
-    padding-left: 0.6rem !important;
-    padding-right: 0.6rem !important;
+    padding-top: 0.4rem !important;
+    padding-bottom: 0.4rem !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+}}
+
+/* Shrink standard Streamlit element vertical gaps */
+[data-testid="stVerticalBlock"] {{
+    gap: 0.4rem !important;
 }}
 
 /* Custom Fixed Grid Overrides for Mobile Viewports */
 .snapshot-grid {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: 5px;
+    margin-bottom: 4px;
 }}
 
 .activity-totals-grid {{
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: 5px;
+    margin-bottom: 4px;
 }}
 
+/* Reduced height and padding to fit screen boundaries */
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
-    border-radius: 6px;
-    padding: 6px 8px;
+    border-radius: 5px;
+    padding: 4px 6px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    min-height: 72px;
+    min-height: 56px;
     box-sizing: border-box;
 }}
 
 .kpi-label {{
     color: {MUTED};
-    font-size: 0.58rem;
+    font-size: 0.54rem;
     text-transform: uppercase;
     letter-spacing: 0.02em;
     white-space: nowrap;
@@ -89,64 +100,68 @@ h1 {{
 }}
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.05rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: #E8ECF3;
     line-height: 1.1;
-    margin: 2px 0;
+    margin: 1px 0;
 }}
 .kpi-sub {{
     color: {MUTED};
-    font-size: 0.62rem;
+    font-size: 0.56rem;
     line-height: 1.1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }}
 
+/* Compact section header borders & text */
 .section-title {{
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.85rem;
     color: #E8ECF3;
     border-left: 3px solid {ACCENT};
-    padding-left: 8px;
-    margin: 14px 0 8px 0;
+    padding-left: 6px;
+    margin: 6px 0 4px 0;
 }}
 
 .activity-card {{
     background: #18253D;
     border: 1px solid #253552;
-    border-radius: 6px;
-    padding: 8px;
+    border-radius: 5px;
+    padding: 6px;
     box-sizing: border-box;
 }}
 .activity-date {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     color: {ACCENT};
     font-weight: 600;
-    margin-bottom: 2px;
+    margin-bottom: 1px;
 }}
 .activity-metrics {{
     display: flex;
     justify-content: space-between;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     color: #E8ECF3;
 }}
 .activity-pace {{
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     color: {MUTED};
-    margin-top: 2px;
+    margin-top: 1px;
 }}
 
 .stTabs [data-baseweb="tab-list"] {{
-    gap: 4px;
+    gap: 2px;
 }}
 .stTabs [data-baseweb="tab"] {{
-    padding-left: 10px !important;
-    padding-right: 10px !important;
-    font-size: 0.8rem !important;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+    font-size: 0.75rem !important;
+    height: auto !important;
 }}
 </style>
 """
@@ -276,7 +291,6 @@ def find_vo2(obj):
     if isinstance(obj, dict):
         for k, v in obj.items():
             if "vo2" in str(k).lower() and v and v != "-":
-                # Ensure it's an actual number or number-like string, not another dictionary
                 if isinstance(v, (int, float)) or (isinstance(v, str) and v.replace('.', '', 1).isdigit()):
                     return v
             result = find_vo2(v)
@@ -391,7 +405,6 @@ for a in raw_activities:
             "duration_s": duration_s,
             "duration_hms": sec_to_hms(duration_s),
             "avg_hr": a.get("averageHR"),
-            # Fixed typo key to capture proper variants safely
             "vo2": a.get("vo2MaxValue") or a.get("vO2MaxValue") or a.get("vO2maxValue"),
             "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
         }
@@ -405,31 +418,23 @@ df = pd.DataFrame(records)
 # --------------------------------------------------------------------------
 vo2_max_val = "-"
 status_label = "Active"
-found_source = "None"
 
 # Priority 1: Search training status dictionary
 found_vo2_target = find_vo2(training_status)
-if found_vo2_target:
-    found_source = "Training Status"
 
 # Priority 2: Search max metrics 30-day loop dump
 if not found_vo2_target:
     found_vo2_target = find_vo2(max_metrics)
-    if found_vo2_target:
-        found_source = "Max Metrics Lookback"
 
 # Priority 3: Search User Profile data structure
 if not found_vo2_target:
     found_vo2_target = find_vo2(user_profile)
-    if found_vo2_target:
-        found_source = "User Profile"
 
 # Priority 4: Look for embedded values directly within historical activity objects
 if not found_vo2_target and not df.empty:
     valid_activity_vo2 = df[df["vo2"].notna() & (df["vo2"] != "-")].copy()
     if not valid_activity_vo2.empty:
         found_vo2_target = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["vo2"]
-        found_source = "Recent Activities"
 
 # Convert and cast final data safely
 if found_vo2_target is not None:
@@ -438,7 +443,7 @@ if found_vo2_target is not None:
     except Exception:  # noqa: BLE001
         pass
 
-# 2. Resilient Training Status text formatting
+# Resilient Training Status text formatting
 if isinstance(training_status, dict) and training_status:
     recent_status = training_status.get("mostRecentTrainingStatus", {})
     if isinstance(recent_status, dict):
@@ -450,7 +455,7 @@ else:
 
 status_label = str(status_label).replace("_", " ").title()
 
-# 3. Parse remaining daily vital stats safely
+# Parse remaining daily vital stats safely
 rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
 hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, dict) else "-"
 
@@ -485,14 +490,8 @@ if isinstance(training_status, dict):
 # --------------------------------------------------------------------------
 # MAIN DASHBOARD INTERFACE
 # --------------------------------------------------------------------------
-st.title("Performance & Health Dashboard")
-st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
-
-# Keep an expander block to see precisely which endpoint yielded the value
-with st.expander("🔍 Deep Search Diagnosis Log", expanded=False):
-    st.write(f"**VO2 Extraction Source:** `{found_source}`")
-    st.write(f"**Raw Matched Object Value:** `{found_vo2_target}`")
-    st.write("**Is Training Status Empty?**", training_status == {})
+# Combined title and synchronization info to preserve screen footprint
+st.markdown(f"<h1>Performance & Health Dashboard <span style='font-size:0.65rem; color:{MUTED}; font-weight:normal; float:right; margin-top:0.4rem;'>Sync: {dt.datetime.now().strftime('%H:%M')}</span></h1>", unsafe_allow_html=True)
 
 # Render Mobile-Safe 2x3 Grid Container
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
@@ -520,5 +519,3 @@ else:
         sport_tab(df, "cycling", start_of_week, end_of_week)
     with tab_swim:
         sport_tab(df, "swimming", start_of_week, end_of_week)
-
-st.divider()
