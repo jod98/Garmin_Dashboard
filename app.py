@@ -154,7 +154,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# GARMIN CONNECTION
+# GARMIN CONNECTION & CACHING
 # --------------------------------------------------------------------------
 @st.cache_resource(ttl=3600, show_spinner=False)
 def get_garmin_client():
@@ -221,6 +221,14 @@ def fetch_training_status(_client, date_str):
         return None
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_max_metrics(_client, date_str):
+    try:
+        return _client.get_max_metrics(date_str)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 # --------------------------------------------------------------------------
 # HELPERS
 # --------------------------------------------------------------------------
@@ -246,7 +254,6 @@ def pace_min_per_km(distance_m, duration_s):
     return f"{mn}:{s:02d}/km"
 
 
-# Must be a clean, completely flat single-line string to avoid markdown code-fencing leaks
 def build_kpi_html(label, value, sub=""):
     return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>'
 
@@ -261,7 +268,6 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
     avg_hr = round(avg_hr_series.mean(), 0) if not avg_hr_series.empty else "-"
     best_dist = this_week_df["distance_km"].max() if not this_week_df.empty else 0.0
 
-    # Flat, compressed layout strings
     card1 = build_kpi_html("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")
     card2 = build_kpi_html("Total Time", sec_to_hms(total_time))
     card3 = build_kpi_html("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")
@@ -295,8 +301,9 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
+
 # --------------------------------------------------------------------------
-# CONNECT & DATA PARSING
+# CONNECT & DATA RETRIEVAL
 # --------------------------------------------------------------------------
 client, error = get_garmin_client()
 if error:
@@ -313,13 +320,16 @@ today_str = today.strftime("%Y-%m-%d")
 start_of_week = today - timedelta(days=today.weekday())
 end_of_week = start_of_week + timedelta(days=6)
 
+# Execute API queries
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
+max_metrics = fetch_max_metrics(client, today_str)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 150)
 
+# Parse historical activities
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -356,21 +366,40 @@ for a in raw_activities:
 
 df = pd.DataFrame(records)
 
-# --------------------------------------------------------------------------
-# MAIN UI
-# --------------------------------------------------------------------------
-st.title("Performance & Health Dashboard")
-st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
-# Extract Metrics
+# --------------------------------------------------------------------------
+# DATA PARSING & EXTRACTION
+# --------------------------------------------------------------------------
+
+# 1. Parse VO2 Max from the dedicated endpoint structures
 vo2_max_val = "-"
 status_label = "Unknown"
+
+if isinstance(max_metrics, list) and len(max_metrics) > 0:
+    metric_entry = max_metrics[0]
+elif isinstance(max_metrics, dict):
+    metric_entry = max_metrics
+else:
+    metric_entry = {}
+
+vo2_raw = (
+    metric_entry.get("vo2MaxValue") or 
+    metric_entry.get("genericEntries", [{}])[0].get("vo2Max") or
+    metric_entry.get("vo2Max", "-")
+)
+
+if isinstance(vo2_raw, (int, float)):
+    vo2_max_val = int(round(vo2_raw))
+
+# Parse context label for the training status
 if isinstance(training_status, dict):
-    vo2_max_val = training_status.get("vo2Max", "-")
     recent_status = training_status.get("mostRecentTrainingStatus") or {}
     status_data = recent_status.get("latestTrainingStatusData") or {}
-    status_label = status_data.get("trainingStatus", "Unknown")
+    status_label = status_data.get("trainingStatus") or ("Active" if vo2_max_val != "-" else "Unknown")
+elif vo2_max_val != "-":
+    status_label = "Active"
 
+# 2. Parse remaining daily vital stats
 rhr = stats.get("restingHeartRate", "-")
 
 hrv_val = "-"
@@ -401,12 +430,16 @@ if isinstance(training_status, dict):
     metrics_status = load_balance.get("metricsTrainingStatus") or {}
     load_val = metrics_status.get("trainingLoad", "-")
 
+
 # --------------------------------------------------------------------------
-# TODAY'S SNAPSHOT (STRICT MOBILE-SAFE 2x3 CONSTRAINED MATRIX)
+# MAIN DASHBOARD INTERFACE
 # --------------------------------------------------------------------------
+st.title("Performance & Health Dashboard")
+st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
+
+# Render Mobile-Safe 2x3 Grid Container
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
-# Combine into a single completely flat string with zero line-breaks or margins
 c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
 c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
 c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")
@@ -418,9 +451,7 @@ snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
 
 
-# --------------------------------------------------------------------------
-# ACTIVITY PROGRESS SECTION
-# --------------------------------------------------------------------------
+# Render Activity Progress Sections
 st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
 
 if df.empty:
