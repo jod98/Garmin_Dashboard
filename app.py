@@ -5,7 +5,7 @@ from Garmin Connect with clean inline HTML structure.
 """
 
 import datetime as dt
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -216,40 +216,29 @@ def fetch_body_battery(_client, start_date, end_date):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_training_status(_client, date_str):
     try:
-        return _client.get_training_status(date_str)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_user_profile(_client):
-    try:
-        return _client.get_user_profile()
+        return _client.get_training_status(date_str) or {}
     except Exception:  # noqa: BLE001
         return {}
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_max_metrics_with_lookback(_client, base_date):
-    for offset in range(30):
-        target_date_str = (base_date - timedelta(days=offset)).strftime("%Y-%m-%d")
+def fetch_user_profile(_client):
+    try:
+        return _client.get_user_profile() or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_max_metrics_with_lookback(_client):
+    for i in range(30):
+        d = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
         try:
-            res = _client.get_max_metrics(target_date_str)
-            if res:
-                entries = res if isinstance(res, list) else [res]
-                for entry in entries:
-                    if isinstance(entry, dict):
-                        keys_to_verify = [
-                            "vo2MaxValue", "vo2Max", "vo2MaxGenericValue", 
-                            "genericValue", "splitVO2MaxEntries", 
-                            "runningVO2MaxEntries", "cyclingVO2MaxEntries"
-                        ]
-                        if any(k in entry and entry[k] for k in keys_to_verify):
-                            return res
-                        if "genericEntries" in entry and isinstance(entry["genericEntries"], list) and len(entry["genericEntries"]) > 0:
-                            return res
+            data = _client.get_max_metrics(d)
+            if data:
+                return data
         except Exception:  # noqa: BLE001
-            continue
+            pass
     return {}
 
 
@@ -280,6 +269,25 @@ def pace_min_per_km(distance_m, duration_s):
 
 def build_kpi_html(label, value, sub=""):
     return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>'
+
+
+def find_vo2(obj):
+    """Recursively searches for any key/value match containing 'vo2'."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if "vo2" in str(k).lower() and v and v != "-":
+                # Ensure it's an actual number or number-like string, not another dictionary
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.replace('.', '', 1).isdigit()):
+                    return v
+            result = find_vo2(v)
+            if result is not None:
+                return result
+    elif isinstance(obj, list):
+        for item in obj:
+            result = find_vo2(item)
+            if result is not None:
+                return result
+    return None
 
 
 def sport_tab(df, sport_key, start_of_week, end_of_week):
@@ -350,12 +358,9 @@ hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
 user_profile = fetch_user_profile(client)
-
-# Use our 30-day lookback wrapper explicitly for the Max Metrics endpoint
-max_metrics = fetch_max_metrics_with_lookback(client, today)
-
+max_metrics = fetch_max_metrics_with_lookback(client)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
-raw_activities = fetch_activities(client, 0, 150)
+raw_activities = fetch_activities(client, 0, 50)
 
 # Parse historical activities
 records = []
@@ -375,8 +380,6 @@ for a in raw_activities:
         a_date = dt.datetime.strptime(start_str[:10], "%Y-%m-%d").date()
     except ValueError:
         continue
-    if a_date < start_date:
-        continue
 
     distance_m = a.get("distance", 0) or 0
     duration_s = a.get("duration", 0) or 0
@@ -388,7 +391,8 @@ for a in raw_activities:
             "duration_s": duration_s,
             "duration_hms": sec_to_hms(duration_s),
             "avg_hr": a.get("averageHR"),
-            "v02": a.get("vVO2MaxValue"), # Trace historical markers if attached
+            # Fixed typo key to capture proper variants safely
+            "vo2": a.get("vo2MaxValue") or a.get("vO2MaxValue") or a.get("vO2maxValue"),
             "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
         }
     )
@@ -397,79 +401,58 @@ df = pd.DataFrame(records)
 
 
 # --------------------------------------------------------------------------
-# DATA PARSING & EXTRACTION (WITH DEEP PROFILE FALLBACKS)
+# THE RECURSIVE DEEP INSPECTION LAYER
 # --------------------------------------------------------------------------
-
 vo2_max_val = "-"
-status_label = "Active"  # Base default state string fallback
-vo2_raw = None
+status_label = "Active"
+found_source = "None"
 
-# STRATEGY 1: Attempt extraction from user profile properties (Most reliable backup)
-if isinstance(user_profile, dict):
-    vo2_raw = user_profile.get("vO2Max") or user_profile.get("vo2Max")
+# Priority 1: Search training status dictionary
+found_vo2_target = find_vo2(training_status)
+if found_vo2_target:
+    found_source = "Training Status"
 
-# STRATEGY 2: Trace recent running activities with embedded VO2 fields if Strategy 1 was empty
-if (vo2_raw is None or vo2_raw == "-") and not df.empty:
-    valid_activity_vo2 = df[df["v02"].notna() & (df["v02"] != "-")]
+# Priority 2: Search max metrics 30-day loop dump
+if not found_vo2_target:
+    found_vo2_target = find_vo2(max_metrics)
+    if found_vo2_target:
+        found_source = "Max Metrics Lookback"
+
+# Priority 3: Search User Profile data structure
+if not found_vo2_target:
+    found_vo2_target = find_vo2(user_profile)
+    if found_vo2_target:
+        found_source = "User Profile"
+
+# Priority 4: Look for embedded values directly within historical activity objects
+if not found_vo2_target and not df.empty:
+    valid_activity_vo2 = df[df["vo2"].notna() & (df["vo2"] != "-")].copy()
     if not valid_activity_vo2.empty:
-        vo2_raw = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["v02"]
+        found_vo2_target = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["vo2"]
+        found_source = "Recent Activities"
 
-# STRATEGY 3: Standard metrics lookup endpoint fallback loop
-if vo2_raw is None or vo2_raw == "-":
-    metric_entries = max_metrics if isinstance(max_metrics, list) else [max_metrics]
-    for entry in metric_entries:
-        if not isinstance(entry, dict):
-            continue
-        possible_keys = ["vo2MaxValue", "vo2Max", "vo2MaxGenericValue", "genericValue"]
-        for k in possible_keys:
-            if entry.get(k):
-                vo2_raw = entry.get(k)
-                break
-        if not entry.get("vo2MaxValue") and "genericEntries" in entry:
-            g_entries = entry["genericEntries"]
-            if isinstance(g_entries, list) and len(g_entries) > 0:
-                vo2_raw = g_entries[0].get("vo2Max") or g_entries[0].get("vo2MaxValue")
-        for sport_key in ["splitVO2MaxEntries", "runningVO2MaxEntries", "cyclingVO2MaxEntries"]:
-            if sport_key in entry and isinstance(entry[sport_key], list) and len(entry[sport_key]) > 0:
-                vo2_raw = entry[sport_key][0].get("vo2MaxValue") or entry[sport_key][0].get("vo2Max")
-
-# Safely parse and convert the discovered target point
-if vo2_raw is not None and vo2_raw != "-":
+# Convert and cast final data safely
+if found_vo2_target is not None:
     try:
-        if isinstance(vo2_raw, (int, float)):
-            vo2_max_val = int(round(vo2_raw))
-        elif str(vo2_raw).replace('.', '', 1).isdigit():
-            vo2_max_val = int(round(float(vo2_raw)))
+        vo2_max_val = int(round(float(found_vo2_target)))
     except Exception:  # noqa: BLE001
         pass
 
-# 2. Resilient Training Status extraction
+# 2. Resilient Training Status text formatting
 if isinstance(training_status, dict) and training_status:
     recent_status = training_status.get("mostRecentTrainingStatus", {})
     if isinstance(recent_status, dict):
         status_data = recent_status.get("latestTrainingStatusData", {})
         if isinstance(status_data, dict):
             status_label = status_data.get("trainingStatus") or status_label
-            
-    if status_label == "Active" or not status_label:
-        ct_status = training_status.get("computedTrainingStatus")
-        if ct_status:
-            status_label = str(ct_status).title()
 else:
-    if vo2_max_val != "-":
-        status_label = "Productive"
-    else:
-        status_label = "No Data"
+    status_label = "Productive" if vo2_max_val != "-" else "No Data"
 
-# Clean up string formatting
 status_label = str(status_label).replace("_", " ").title()
 
-# 3. Parse remaining daily vital stats
+# 3. Parse remaining daily vital stats safely
 rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
-
-hrv_val = "-"
-if isinstance(hrv, dict):
-    hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-")
+hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, dict) else "-"
 
 sleep_string = "-"
 sleep_score = "-"
@@ -505,6 +488,12 @@ if isinstance(training_status, dict):
 st.title("Performance & Health Dashboard")
 st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
+# Keep an expander block to see precisely which endpoint yielded the value
+with st.expander("🔍 Deep Search Diagnosis Log", expanded=False):
+    st.write(f"**VO2 Extraction Source:** `{found_source}`")
+    st.write(f"**Raw Matched Object Value:** `{found_vo2_target}`")
+    st.write("**Is Training Status Empty?**", training_status == {})
+
 # Render Mobile-Safe 2x3 Grid Container
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
@@ -517,7 +506,6 @@ c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", 
 
 snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
-
 
 # Render Activity Progress Sections
 st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
