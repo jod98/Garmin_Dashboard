@@ -29,14 +29,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# HR-zone palette used consistently across every chart/card in the app.
-ZONE_COLORS = {
-    1: "#4ADE80",  # recovery / easy
-    2: "#2DD4BF",  # aerobic
-    3: "#FBBF24",  # tempo
-    4: "#FB7185",  # threshold
-    5: "#EF4444",  # max
-}
 ACCENT = "#2DD4BF"
 ACCENT_2 = "#F5A623"
 MUTED = "#8792A6"
@@ -89,22 +81,13 @@ h1, h2, h3, .metric-label {{
     padding-left: 10px;
     margin: 22px 0 12px 0;
 }}
-.zone-chip {{
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 20px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: #0B1220;
-}}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# GARMIN CONNECTION (cached at process level so we don't log in on every
-# page view -- Garmin can flag/lock accounts that log in too frequently)
+# GARMIN CONNECTION
 # --------------------------------------------------------------------------
 @st.cache_resource(ttl=3600, show_spinner=False)
 def get_garmin_client():
@@ -255,7 +238,7 @@ def sport_tab(df, sport_key, sport_label):
         best_dist = sport_df["distance_km"].max()
         kpi_card("Longest Session", f"{best_dist:.1f} km")
 
-    st.markdown('<div class="section-title">Distance Trend</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Distance Trend (Week-to-Week Breakdown)</div>', unsafe_allow_html=True)
     trend = sport_df.sort_values("date")
     fig = go.Figure()
     fig.add_trace(
@@ -275,15 +258,15 @@ def sport_tab(df, sport_key, sport_label):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-title">Recent Activities</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Last 10 Completed Activities</div>', unsafe_allow_html=True)
     show_cols = ["date", "name", "distance_km", "duration_hms", "avg_hr", "max_hr", "pace"]
     st.dataframe(
-        sport_df.sort_values("date", ascending=False)[show_cols],
+        sport_df.sort_values("date", ascending=False).head(10)[show_cols],
         use_container_width=True,
         hide_index=True,
     )
 
-    st.markdown('<div class="section-title">Heart Rate - Most Recent Session</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Heart Rate Graph - Most Recent Session</div>', unsafe_allow_html=True)
     latest = sport_df.sort_values("date", ascending=False).iloc[0]
     hr_series = fetch_activity_hr_series(st.session_state.client, latest["activity_id"])
     if not hr_series.empty:
@@ -314,12 +297,14 @@ def sport_tab(df, sport_key, sport_label):
 # --------------------------------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------------------------------
-st.sidebar.markdown("### Performance & Health Dashboard")
-days_back = st.sidebar.slider("Activity window (days)", 7, 90, 28)
+st.sidebar.markdown("### Dashboard Filters")
+days_back = st.sidebar.slider("Historical Activity Window (days)", 7, 90, 28)
+weekly_goal = st.sidebar.number_input("Weekly Running Goal (km)", min_value=5, max_value=150, value=40, step=5)
+
 if st.sidebar.button("Refresh now", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
-st.sidebar.caption("Data auto-refreshes every 15 minutes. Manual refresh forces an immediate pull.")
+st.sidebar.caption("Data auto-refreshes every 15 minutes.")
 
 # --------------------------------------------------------------------------
 # CONNECT
@@ -327,11 +312,6 @@ st.sidebar.caption("Data auto-refreshes every 15 minutes. Manual refresh forces 
 client, error = get_garmin_client()
 if error:
     st.error(f"Garmin connection issue: {error}")
-    st.info(
-        "Add GARMIN_EMAIL and GARMIN_PASSWORD under Settings -> Secrets "
-        "(Streamlit Community Cloud) or in .streamlit/secrets.toml locally, "
-        "then reload."
-    )
     st.stop()
 
 st.session_state.client = client
@@ -341,9 +321,16 @@ today = dt.date.today()
 start_date = today - timedelta(days=days_back)
 
 # --------------------------------------------------------------------------
-# LOAD ACTIVITIES
+# LOAD HEALTH & ACTIVITY DATA
 # --------------------------------------------------------------------------
+today_str = today.strftime("%Y-%m-%d")
+stats = fetch_day_stats(client, today_str)
+hrv = fetch_hrv(client, today_str)
+sleep = fetch_sleep(client, today_str)
+training_status = fetch_training_status(client, today_str)
+body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 200)
+
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -384,34 +371,49 @@ for a in raw_activities:
 df = pd.DataFrame(records)
 
 # --------------------------------------------------------------------------
-# TODAY'S HEALTH SNAPSHOT
+# HEADER SECTION
 # --------------------------------------------------------------------------
-today_str = today.strftime("%Y-%m-%d")
-stats = fetch_day_stats(client, today_str)
-hrv = fetch_hrv(client, today_str)
-sleep = fetch_sleep(client, today_str)
-training_status = fetch_training_status(client, today_str)
-body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
-
 st.title("Performance & Health Dashboard")
-st.caption(f"Last synced {dt.datetime.now().strftime('%d %b %Y, %H:%M')} · window: last {days_back} days")
+st.caption(f"Last synced {dt.datetime.now().strftime('%d %b %Y, %H:%M')}")
 
+# --------------------------------------------------------------------------
+# TOP HEALTH SNAPSHOT
+# --------------------------------------------------------------------------
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1:
+h1, h2, h3, h4, h5 = st.columns(5)
+
+with h1:
+    vo2_max_val = "-"
+    status_label = "Unknown"
+    if isinstance(training_status, dict):
+        vo2_max_val = training_status.get("vo2Max", "-")
+        recent_status = training_status.get("mostRecentTrainingStatus") or {}
+        status_data = recent_status.get("latestTrainingStatusData") or {}
+        status_label = status_data.get("trainingStatus", "Unknown")
+    kpi_card("VO2 Max", f"{vo2_max_val}", f"Status: {status_label}")
+
+with h2:
     rhr = stats.get("restingHeartRate", "-")
     kpi_card("Resting HR", f"{rhr} bpm" if rhr != "-" else "-")
-with c2:
+
+with h3:
     hrv_val = "-"
     if isinstance(hrv, dict):
         hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-")
-    kpi_card("HRV (overnight avg)", f"{hrv_val} ms" if hrv_val != "-" else "-")
-with c3:
-    sleep_secs = "-"
+    kpi_card("HRV (Overnight Avg)", f"{hrv_val} ms" if hrv_val != "-" else "-")
+
+with h4:
+    sleep_string = "-"
+    sleep_score = "-"
     if isinstance(sleep, dict):
-        sleep_secs = sleep.get("dailySleepDTO", {}).get("sleepTimeSeconds")
-    kpi_card("Sleep", sec_to_hms(sleep_secs) if sleep_secs and sleep_secs != "-" else "-")
-with c4:
+        dto = sleep.get("dailySleepDTO", {})
+        sleep_secs = dto.get("sleepTimeSeconds")
+        sleep_score = dto.get("sleepScore", "-")
+        if sleep_secs:
+            sleep_string = sec_to_hms(sleep_secs)
+    kpi_card("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
+
+with h5:
     bb_val = "-"
     if body_battery_raw:
         try:
@@ -422,7 +424,35 @@ with c4:
         except Exception:  # noqa: BLE001
             pass
     kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
-with c5:
+
+# --------------------------------------------------------------------------
+# STRICT MONDAY-SUNDAY WEEKLY VOLUME TARGET TRACKER + TRAINING LOAD
+# --------------------------------------------------------------------------
+st.markdown('<div class="section-title">Weekly Tracker &amp; Load Status</div>', unsafe_allow_html=True)
+w1, w2, w3 = st.columns(3)
+
+# Calculate runs in the current strict Monday - Sunday calendar block
+start_of_week = today - timedelta(days=today.weekday())  # Mon
+end_of_week = start_of_week + timedelta(days=6)          # Sun
+
+if not df.empty:
+    weekly_runs = df[(df["sport"] == "running") & (df["date"] >= start_of_week) & (df["date"] <= end_of_week)]
+    current_weekly_km = weekly_runs["distance_km"].sum()
+else:
+    current_weekly_km = 0.0
+
+kms_left = max(0.0, weekly_goal - current_weekly_km)
+
+with w1:
+    kpi_card(
+        "Current Week Volume", 
+        f"{current_weekly_km:.1f} / {weekly_goal} km", 
+        f"Mon {start_of_week.strftime('%b %d')} - Sun {end_of_week.strftime('%b %d')}"
+    )
+with w2:
+    status_msg = "Goal achieved! 🎉" if kms_left == 0 else f"{kms_left:.1f} km left to hit target"
+    kpi_card("Distance Remaining", f"{kms_left:.1f} km", status_msg)
+with w3:
     load_val = "-"
     if isinstance(training_status, dict):
         load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
@@ -431,113 +461,18 @@ with c5:
     kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
 
 # --------------------------------------------------------------------------
-# WINDOW SUMMARY (all sports combined)
+# SPORTS TABS OVERVIEW
 # --------------------------------------------------------------------------
-st.markdown('<div class="section-title">Overview — Selected Window</div>', unsafe_allow_html=True)
 if df.empty:
-    st.info("No running, cycling, or swimming activities found in this window.")
+    st.info("No running, cycling, or swimming activities found in your history window.")
 else:
-    o1, o2, o3, o4 = st.columns(4)
-    with o1:
-        kpi_card("Total Sessions", f"{len(df)}")
-    with o2:
-        kpi_card("Total Distance", f"{df['distance_km'].sum():.1f} km")
-    with o3:
-        kpi_card("Total Time", sec_to_hms(df["duration_s"].sum()))
-    with o4:
-        avg_hr_all = df["avg_hr"].dropna()
-        kpi_card("Avg HR (all sports)", f"{round(avg_hr_all.mean())} bpm" if not avg_hr_all.empty else "-")
-
-    fig = go.Figure()
-    for sport, color in SPORT_COLORS.items():
-        sport_df = df[df["sport"] == sport].sort_values("date")
-        if sport_df.empty:
-            continue
-        fig.add_trace(
-            go.Bar(x=sport_df["date"], y=sport_df["distance_km"], name=sport.capitalize(), marker_color=color)
-        )
-    fig.update_layout(
-        barmode="stack",
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=300,
-        legend=dict(orientation="h", y=1.1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# --------------------------------------------------------------------------
-# SPORT TABS
-# --------------------------------------------------------------------------
-tab_run, tab_bike, tab_swim, tab_health = st.tabs(["🏃 Running", "🚴 Cycling", "🏊 Swimming", "❤️ Health"])
-with tab_run:
-    sport_tab(df, "running", "Running")
-with tab_bike:
-    sport_tab(df, "cycling", "Cycling")
-with tab_swim:
-    sport_tab(df, "swimming", "Swimming")
-
-with tab_health:
-    st.markdown('<div class="section-title">Body Battery (7 days)</div>', unsafe_allow_html=True)
-    bb_rows = []
-    for day in body_battery_raw or []:
-        for point in day.get("bodyBatteryValuesArray", []):
-            bb_rows.append({"timestamp": point[0], "level": point[1]})
-    if bb_rows:
-        bb_df = pd.DataFrame(bb_rows)
-        bb_df["timestamp"] = pd.to_datetime(bb_df["timestamp"], unit="ms", errors="coerce")
-        fig_bb = go.Figure()
-        fig_bb.add_trace(
-            go.Scatter(x=bb_df["timestamp"], y=bb_df["level"], mode="lines", line=dict(color=ACCENT, width=2))
-        )
-        fig_bb.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=10, t=10, b=10),
-            height=260,
-        )
-        st.plotly_chart(fig_bb, use_container_width=True)
-    else:
-        st.caption("No Body Battery data available.")
-
-    st.markdown('<div class="section-title">Sleep &amp; HRV — Today</div>', unsafe_allow_html=True)
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        deep = light = rem = "-"
-        if isinstance(sleep, dict):
-            dto = sleep.get("dailySleepDTO", {})
-            deep = sec_to_hms(dto.get("deepSleepSeconds"))
-            light = sec_to_hms(dto.get("lightSleepSeconds"))
-            rem = sec_to_hms(dto.get("remSleepSeconds"))
-        kpi_card("Deep Sleep", deep)
-    with s2:
-        kpi_card("Light Sleep", light)
-    with s3:
-        kpi_card("REM Sleep", rem)
-
-    st.markdown('<div class="section-title">Fitness Metrics</div>', unsafe_allow_html=True)
-    status_label = "Unknown"
-    vo2_max_val = "-"
-    
-    if isinstance(training_status, dict):
-        # Safely capture Training Status
-        recent_status = training_status.get("mostRecentTrainingStatus") or {}
-        status_data = recent_status.get("latestTrainingStatusData") or {}
-        status_label = status_data.get("trainingStatus", "Unknown")
-        
-        # Safely capture VO2 Max value
-        vo2_max_val = training_status.get("vo2Max", "-")
-
-    col_stat, col_vo2 = st.columns(2)
-    with col_stat:
-        kpi_card("Training Status", status_label)
-    with col_vo2:
-        kpi_card("VO2 Max", f"{vo2_max_val}" if vo2_max_val != "-" else "-")
+    tab_run, tab_bike, tab_swim = st.tabs(["🏃 Running", "🚴 Cycling", "🏊 Swimming"])
+    with tab_run:
+        sport_tab(df, "running", "Running")
+    with tab_bike:
+        sport_tab(df, "cycling", "Cycling")
+    with tab_swim:
+        sport_tab(df, "swimming", "Swimming")
 
 st.divider()
-st.caption(
-    "Built with Streamlit + garminconnect. Data reflects your Garmin Connect account "
-    "and refreshes automatically every 15 minutes while the app is open."
-)
+st.caption("Built with Streamlit + garminconnect. Data automatically pulls directly from your Garmin profile.")
