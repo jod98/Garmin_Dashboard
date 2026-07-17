@@ -1,7 +1,7 @@
 """
-Performance & Health Dashboard (Mobile-First 2x3 & 2x2 Grid Layouts)
+Performance & Health Dashboard (Mobile-First 2x3 & 2x2 Fixed Grids)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
-from Garmin Connect with structured health and activity rows.
+from Garmin Connect with forced custom grid rendering.
 """
 
 import datetime as dt
@@ -37,7 +37,6 @@ html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
 
-/* Shrink the main header font size by half for mobile viewports */
 h1 {{
     font-family: 'Space Grotesk', sans-serif !important;
     font-size: 1.5rem !important; 
@@ -45,82 +44,96 @@ h1 {{
     margin-bottom: 0.25rem !important;
 }}
 
-h2, h3, .metric-label {{
-    font-family: 'Space Grotesk', sans-serif !important;
-}}
-
 .block-container {{
     padding-top: 1rem !important;
     padding-bottom: 2rem !important;
-    padding-left: 0.8rem !important;
-    padding-right: 0.8rem !important;
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important;
 }}
 
-/* Ultra-compact cards for mobile rows */
+/* Unbending Custom Grid Matrix Rules for Mobile Screens */
+.snapshot-grid {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 12px;
+}}
+
+.activity-totals-grid {{
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    margin-bottom: 12px;
+}}
+
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
     border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 6px;
-    height: 100%;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 72px;
 }}
+
 .kpi-label {{
     color: {MUTED};
-    font-size: 0.65rem;
+    font-size: 0.58rem;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    margin-bottom: 2px;
+    letter-spacing: 0.02em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }}
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     font-weight: 600;
     color: #E8ECF3;
     line-height: 1.1;
+    margin: 2px 0;
 }}
 .kpi-sub {{
     color: {MUTED};
-    font-size: 0.68rem;
-    margin-top: 1px;
+    font-size: 0.62rem;
     line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }}
+
 .section-title {{
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 600;
-    font-size: 0.98rem;
+    font-size: 0.95rem;
     color: #E8ECF3;
     border-left: 3px solid {ACCENT};
     padding-left: 8px;
-    margin: 16px 0 10px 0;
+    margin: 14px 0 8px 0;
 }}
 
-/* Compact 2x2 grid card styles for specific mobile activities */
 .activity-card {{
     background: #18253D;
     border: 1px solid #253552;
     border-radius: 6px;
-    padding: 10px;
-    margin-bottom: 8px;
+    padding: 8px;
 }}
 .activity-date {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: {ACCENT};
     font-weight: 600;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }}
 .activity-metrics {{
     display: flex;
     justify-content: space-between;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     color: #E8ECF3;
 }}
 .activity-pace {{
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     color: {MUTED};
     margin-top: 2px;
 }}
@@ -129,9 +142,9 @@ h2, h3, .metric-label {{
     gap: 4px;
 }}
 .stTabs [data-baseweb="tab"] {{
-    padding-left: 12px !important;
-    padding-right: 12px !important;
-    font-size: 0.85rem !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    font-size: 0.8rem !important;
 }}
 </style>
 """
@@ -231,21 +244,18 @@ def pace_min_per_km(distance_m, duration_s):
     return f"{mn}:{s:02d}/km"
 
 
-def kpi_card(label, value, sub=""):
-    st.markdown(
-        f"""<div class="kpi-card">
-                <div class="kpi-label">{label}</div>
-                <div class="kpi-value">{value}</div>
-                <div class="kpi-sub">{sub}</div>
-            </div>""",
-        unsafe_allow_html=True,
-    )
+def build_kpi_html(label, value, sub=""):
+    return f"""
+    <div class="kpi-card">
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        <div class="kpi-sub">{sub}</div>
+    </div>
+    """
 
 
 def sport_tab(df, sport_key, start_of_week, end_of_week):
     sport_df = df[df["sport"] == sport_key].copy()
-    
-    # Filter strictly down to this calendar week slice
     this_week_df = sport_df[(sport_df["date"] >= start_of_week) & (sport_df["date"] <= end_of_week)].copy()
     
     total_dist = this_week_df["distance_km"].sum() if not this_week_df.empty else 0.0
@@ -254,42 +264,39 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
     avg_hr = round(avg_hr_series.mean(), 0) if not avg_hr_series.empty else "-"
     best_dist = this_week_df["distance_km"].max() if not this_week_df.empty else 0.0
 
-    # 2x2 Grid for Activity Totals
-    c1, c2 = st.columns(2)
-    with c1:
-        kpi_card("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")
-        kpi_card("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")
-    with c2:
-        kpi_card("Total Time", sec_to_hms(total_time))
-        kpi_card("Longest Session", f"{best_dist:.1f} km")
+    # Fixed 2x2 Grid for Activity summary metrics
+    grid_html = f"""
+    <div class="activity-totals-grid">
+        {build_kpi_html("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")}
+        {build_kpi_html("Total Time", sec_to_hms(total_time))}
+        {build_kpi_html("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")}
+        {build_kpi_html("Longest Session", f"{best_dist:.1f} km")}
+    </div>
+    """
+    st.markdown(grid_html, unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">This Week: Activities</div>', unsafe_allow_html=True)
     
     if not this_week_df.empty:
         sorted_week_df = this_week_df.sort_values("date", ascending=False)
         
-        # Build strict 2x2 mobile grid chunking for listing the logs
-        for i in range(0, len(sorted_week_df), 2):
-            cols = st.columns(2)
-            for j in range(2):
-                if i + j < len(sorted_week_df):
-                    row = sorted_week_df.iloc[i + j]
-                    date_label = row["date"].strftime("%a, %b %d")
-                    pace_line = f'<div class="activity-pace">Pace: {row["pace"]}</div>' if row["pace"] != "-" else ""
-                    
-                    cols[j].markdown(
-                        f"""
-                        <div class="activity-card">
-                            <div class="activity-date">{date_label}</div>
-                            <div class="activity-metrics">
-                                <strong>{row['distance_km']:.2f} km</strong>
-                                <span>{row['duration_hms']}</span>
-                            </div>
-                            {pace_line}
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+        # Fixed 2x2 grid rendering for the logs
+        logs_html = '<div class="activity-totals-grid">'
+        for _, row in sorted_week_df.iterrows():
+            date_label = row["date"].strftime("%a, %b %d")
+            pace_line = f'<div class="activity-pace">Pace: {row["pace"]}</div>' if row["pace"] != "-" else ""
+            logs_html += f"""
+            <div class="activity-card">
+                <div class="activity-date">{date_label}</div>
+                <div class="activity-metrics">
+                    <strong>{row['distance_km']:.2f} km</strong>
+                    <span>{row['duration_hms']}</span>
+                </div>
+                {pace_line}
+            </div>
+            """
+        logs_html += "</div>"
+        st.markdown(logs_html, unsafe_allow_html=True)
     else:
         st.caption("No activities recorded yet for this calendar week.")
 
@@ -304,7 +311,7 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
     st.rerun()
 
 # --------------------------------------------------------------------------
-# CONNECT & CALENDAR CALCULATIONS
+# CONNECT & DATA PARSING
 # --------------------------------------------------------------------------
 client, error = get_garmin_client()
 if error:
@@ -318,9 +325,8 @@ history_days = max(days_back, today.weekday() + 1)
 start_date = today - timedelta(days=history_days)
 today_str = today.strftime("%Y-%m-%d")
 
-# Static week parameters for data parsing
-start_of_week = today - timedelta(days=today.weekday())  # Mon
-end_of_week = start_of_week + timedelta(days=6)          # Sun
+start_of_week = today - timedelta(days=today.weekday())
+end_of_week = start_of_week + timedelta(days=6)
 
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
@@ -329,7 +335,6 @@ training_status = fetch_training_status(client, today_str)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 150)
 
-# Process activities
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -372,7 +377,7 @@ df = pd.DataFrame(records)
 st.title("Performance & Health Dashboard")
 st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
-# Parse Data Fields
+# Extract Metrics
 vo2_max_val = "-"
 status_label = "Unknown"
 if isinstance(training_status, dict):
@@ -412,31 +417,25 @@ if isinstance(training_status, dict):
     load_val = metrics_status.get("trainingLoad", "-")
 
 # --------------------------------------------------------------------------
-# TODAY'S SNAPSHOT (STRICT 2x3 LAYOUT MATRIX)
+# TODAY'S SNAPSHOT (STRICT HTML MOBILE-SAFE 2x3 CONSTRAINED MATRIX)
 # --------------------------------------------------------------------------
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
-# Row 1: VO2 Max, Rest Heart Rate, HRV
-r1_c1, r1_c2, r1_c3 = st.columns(3)
-with r1_c1:
-    kpi_card("VO2 Max", f"{vo2_max_val}", status_label)
-with r1_c2:
-    kpi_card("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-")
-with r1_c3:
-    kpi_card("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-")
-
-# Row 2: Body Battery, Sleep Duration/Score, Training Load
-r2_c1, r2_c2, r2_c3 = st.columns(3)
-with r2_c1:
-    kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
-with r2_c2:
-    kpi_card("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
-with r2_c3:
-    kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
+snapshot_html = f"""
+<div class="snapshot-grid">
+    {build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)}
+    {build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")}
+    {build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")}
+    {build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")}
+    {build_kpi_html("Sleep", f"{sleep_string}", f"Score: {sleep_score}")}
+    {build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")}
+</div>
+"""
+st.markdown(snapshot_html, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# ACTIVITY PROGRESS SECTION (2x2 ACTIVITY LOGGER DETAILED UNDER EACH TAB)
+# ACTIVITY PROGRESS SECTION
 # --------------------------------------------------------------------------
 st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
 
