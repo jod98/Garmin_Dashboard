@@ -1,9 +1,7 @@
 """
-Performance & Health Dashboard
-A Streamlit dashboard that pulls live data from Garmin Connect
-(via the garminconnect library) for a Garmin Forerunner 165 or any
-Garmin device: running / cycling / swimming activities plus
-general health metrics (HRV, sleep, training load, Body Battery).
+Performance & Health Dashboard (Mobile Optimized)
+A compact, mobile-friendly Streamlit dashboard pulling live data 
+from Garmin Connect for running, cycling, and swimming.
 """
 
 import datetime as dt
@@ -20,13 +18,13 @@ from garminconnect import (
 )
 
 # --------------------------------------------------------------------------
-# PAGE CONFIG + STYLE
+# PAGE CONFIG + MOBILE STYLE
 # --------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Performance & Health Dashboard",
+    page_title="Garmin Pulse",
     page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="centered",  # Better for single-column mobile viewports
+    initial_sidebar_state="collapsed",  # Keep sidebar out of the way on mobile
 )
 
 ACCENT = "#2DD4BF"
@@ -45,41 +43,60 @@ h1, h2, h3, .metric-label {{
     font-family: 'Space Grotesk', sans-serif !important;
 }}
 
-/* KPI cards */
+/* Tighten mobile padding */
+.block-container {{
+    padding-top: 1.5rem !important;
+    padding-bottom: 2rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+}}
+
+/* Compact KPI cards for small screens */
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
-    border-radius: 10px;
-    padding: 18px 20px;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
     height: 100%;
 }}
 .kpi-label {{
     color: {MUTED};
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 6px;
+    letter-spacing: 0.05em;
+    margin-bottom: 2px;
 }}
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.9rem;
+    font-size: 1.4rem;
     font-weight: 600;
     color: #E8ECF3;
     line-height: 1.1;
 }}
 .kpi-sub {{
     color: {MUTED};
-    font-size: 0.8rem;
-    margin-top: 4px;
+    font-size: 0.75rem;
+    margin-top: 2px;
 }}
 .section-title {{
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 600;
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     color: #E8ECF3;
     border-left: 3px solid {ACCENT};
-    padding-left: 10px;
-    margin: 22px 0 12px 0;
+    padding-left: 8px;
+    margin: 18px 0 10px 0;
+}}
+
+/* Ensure tabs stretch full mobile width nicely */
+.stTabs [data-baseweb="tab-list"] {{
+    gap: 8px;
+}}
+.stTabs [data-baseweb="tab"] {{
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    font-size: 0.9rem !important;
 }}
 </style>
 """
@@ -154,34 +171,8 @@ def fetch_training_status(_client, date_str):
         return None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_activity_hr_series(_client, activity_id):
-    try:
-        details = _client.get_activity_details(activity_id)
-        metrics = details.get("activityDetailMetrics", [])
-        descriptors = {
-            d["key"]: i for i, d in enumerate(details.get("metricDescriptors", []))
-        }
-        hr_idx = descriptors.get("directHeartRate")
-        time_idx = descriptors.get("sumDuration")
-        if hr_idx is None:
-            return pd.DataFrame()
-        rows = []
-        for m in metrics:
-            vals = m.get("metrics", [])
-            rows.append(
-                {
-                    "seconds": vals[time_idx] if time_idx is not None else None,
-                    "heart_rate": vals[hr_idx],
-                }
-            )
-        return pd.DataFrame(rows)
-    except Exception:  # noqa: BLE001
-        return pd.DataFrame()
-
-
 # --------------------------------------------------------------------------
-# HELPERS
+# MOBILITY & RENDERING HELPERS
 # --------------------------------------------------------------------------
 def m_to_km(m):
     return round((m or 0) / 1000, 2)
@@ -202,7 +193,7 @@ def pace_min_per_km(distance_m, duration_s):
         return "-"
     pace_s = duration_s / km
     mn, s = divmod(int(pace_s), 60)
-    return f"{mn}:{s:02d} /km"
+    return f"{mn}:{s:02d}/km"
 
 
 def kpi_card(label, value, sub=""):
@@ -216,29 +207,41 @@ def kpi_card(label, value, sub=""):
     )
 
 
+def render_mobile_grid(items):
+    """
+    Splits a list of KPI item dicts into rows of 2 columns max.
+    Streamlit handles 2 side-by-side items decently on modern smartphones.
+    """
+    for i in range(0, len(items), 2):
+        row_items = items[i:i+2]
+        cols = st.columns(len(row_items))
+        for idx, item in enumerate(row_items):
+            with cols[idx]:
+                kpi_card(item["label"], item["value"], item.get("sub", ""))
+
+
 def sport_tab(df, sport_key, sport_label):
     sport_df = df[df["sport"] == sport_key].copy()
     if sport_df.empty:
-        st.info(f"No {sport_label.lower()} activities found in the selected range.")
+        st.info(f"No {sport_label.lower()} activities found.")
         return
 
     total_dist = sport_df["distance_km"].sum()
     total_time = sport_df["duration_s"].sum()
     avg_hr_series = sport_df["avg_hr"].dropna()
     avg_hr = round(avg_hr_series.mean(), 0) if not avg_hr_series.empty else "-"
+    best_dist = sport_df["distance_km"].max()
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpi_card("Total Distance", f"{total_dist:.1f} km", f"{len(sport_df)} sessions")
-    with c2:
-        kpi_card("Total Time", sec_to_hms(total_time))
-    with c3:
-        kpi_card("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")
-    with c4:
-        best_dist = sport_df["distance_km"].max()
-        kpi_card("Longest Session", f"{best_dist:.1f} km")
+    # Mobile optimized 2x2 summary layout
+    sport_metrics = [
+        {"label": "Total Distance", "value": f"{total_dist:.1f} km", "sub": f"{len(sport_df)} sessions"},
+        {"label": "Total Time", "value": sec_to_hms(total_time)},
+        {"label": "Avg Heart Rate", "value": f"{avg_hr} bpm" if avg_hr != "-" else "-"},
+        {"label": "Longest Session", "value": f"{best_dist:.1f} km"}
+    ]
+    render_mobile_grid(sport_metrics)
 
-    st.markdown('<div class="section-title">Distance Trend (Week-to-Week Breakdown)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Distance Trend</div>', unsafe_allow_html=True)
     trend = sport_df.sort_values("date")
     fig = go.Figure()
     fig.add_trace(
@@ -246,91 +249,64 @@ def sport_tab(df, sport_key, sport_label):
             x=trend["date"],
             y=trend["distance_km"],
             marker_color=SPORT_COLORS[sport_key],
-            name="Distance (km)",
+            name="KM",
         )
     )
+    # Reduced height and minimal margins for tiny mobile screens
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=280,
+        margin=dict(l=5, r=5, t=5, b=5),
+        height=180,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div class="section-title">Last 10 Completed Activities</div>', unsafe_allow_html=True)
-    show_cols = ["date", "name", "distance_km", "duration_hms", "avg_hr", "max_hr", "pace"]
+    st.markdown('<div class="section-title">Last 5 Activities</div>', unsafe_allow_html=True)
+    
+    # Pruned down table columns to prevent tiny horizontal scroll chains on mobile
+    show_cols = ["date", "distance_km", "duration_hms", "pace"]
+    df_display = sport_df.sort_values("date", ascending=False).head(5)[show_cols].copy()
+    df_display.columns = ["Date", "Dist (km)", "Time", "Pace"]
+    
     st.dataframe(
-        sport_df.sort_values("date", ascending=False).head(10)[show_cols],
+        df_display,
         use_container_width=True,
         hide_index=True,
     )
 
-    st.markdown('<div class="section-title">Heart Rate Graph - Most Recent Session</div>', unsafe_allow_html=True)
-    latest = sport_df.sort_values("date", ascending=False).iloc[0]
-    hr_series = fetch_activity_hr_series(st.session_state.client, latest["activity_id"])
-    if not hr_series.empty:
-        fig2 = go.Figure()
-        fig2.add_trace(
-            go.Scatter(
-                x=hr_series["seconds"],
-                y=hr_series["heart_rate"],
-                mode="lines",
-                line=dict(color=ACCENT_2, width=2),
-                name="Heart Rate",
-            )
-        )
-        fig2.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis_title="Elapsed time (s)",
-            yaxis_title="bpm",
-            margin=dict(l=10, r=10, t=10, b=10),
-            height=280,
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.caption("No second-by-second heart rate data available for this session.")
-
 
 # --------------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR (FILTERS COLLAPSED BY DEFAULT ON MOBILE)
 # --------------------------------------------------------------------------
-st.sidebar.markdown("### Dashboard Filters")
-days_back = st.sidebar.slider("Historical Activity Window (days)", 7, 90, 28)
-weekly_goal = st.sidebar.number_input("Weekly Running Goal (km)", min_value=5, max_value=150, value=40, step=5)
-
-if st.sidebar.button("Refresh now", use_container_width=True):
+st.sidebar.markdown("### Settings")
+days_back = st.sidebar.slider("History Window (days)", 7, 90, 28)
+if st.sidebar.button("Refresh Data", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
-st.sidebar.caption("Data auto-refreshes every 15 minutes.")
 
 # --------------------------------------------------------------------------
-# CONNECT
+# CONNECT & FETCH
 # --------------------------------------------------------------------------
 client, error = get_garmin_client()
 if error:
-    st.error(f"Garmin connection issue: {error}")
+    st.error(f"Connection issue: {error}")
     st.stop()
 
 st.session_state.client = client
-st.sidebar.success("Connected to Garmin ✓")
 
 today = dt.date.today()
 start_date = today - timedelta(days=days_back)
-
-# --------------------------------------------------------------------------
-# LOAD HEALTH & ACTIVITY DATA
-# --------------------------------------------------------------------------
 today_str = today.strftime("%Y-%m-%d")
+
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
-raw_activities = fetch_activities(client, 0, 200)
+raw_activities = fetch_activities(client, 0, 150)
 
+# Process raw fields
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -371,102 +347,61 @@ for a in raw_activities:
 df = pd.DataFrame(records)
 
 # --------------------------------------------------------------------------
-# HEADER SECTION
+# RENDER UI
 # --------------------------------------------------------------------------
-st.title("Performance & Health Dashboard")
-st.caption(f"Last synced {dt.datetime.now().strftime('%d %b %Y, %H:%M')}")
+st.title("Garmin Pulse")
+st.caption(f"Synced: {dt.datetime.now().strftime('%H:%M')}")
 
-# --------------------------------------------------------------------------
-# TOP HEALTH SNAPSHOT
-# --------------------------------------------------------------------------
+# Extract Health Stats
+vo2_max_val = "-"
+status_label = "Unknown"
+if isinstance(training_status, dict):
+    vo2_max_val = training_status.get("vo2Max", "-")
+    recent_status = training_status.get("mostRecentTrainingStatus") or {}
+    status_data = recent_status.get("latestTrainingStatusData") or {}
+    status_label = status_data.get("trainingStatus", "Unknown")
+
+rhr = stats.get("restingHeartRate", "-")
+
+hrv_val = "-"
+if isinstance(hrv, dict):
+    hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-")
+
+sleep_string = "-"
+sleep_score = "-"
+if isinstance(sleep, dict):
+    dto = sleep.get("dailySleepDTO", {})
+    sleep_secs = dto.get("sleepTimeSeconds")
+    sleep_score = dto.get("sleepScore", "-")
+    if sleep_secs:
+        sleep_string = sec_to_hms(sleep_secs)
+
+bb_val = "-"
+if body_battery_raw:
+    try:
+        levels = body_battery_raw[-1].get("bodyBatteryValuesArray", [])
+        if levels:
+            bb_val = levels[-1][1]
+    except Exception:  # noqa: BLE001
+        pass
+
+# Render Health Dashboard to clean mobile grid
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
-h1, h2, h3, h4, h5 = st.columns(5)
+health_metrics = [
+    {"label": "VO2 Max", "value": f"{vo2_max_val}", "sub": status_label},
+    {"label": "Resting HR", "value": f"{rhr} bpm" if rhr != "-" else "-"},
+    {"label": "HRV (Overnight)", "value": f"{hrv_val} ms" if hrv_val != "-" else "-"},
+    {"label": "Body Battery", "value": f"{bb_val}" if bb_val != "-" else "-"},
+    {"label": "Sleep Duration", "value": f"{sleep_string}", "sub": f"Score: {sleep_score}"}
+]
+render_mobile_grid(health_metrics)
 
-with h1:
-    vo2_max_val = "-"
-    status_label = "Unknown"
-    if isinstance(training_status, dict):
-        vo2_max_val = training_status.get("vo2Max", "-")
-        recent_status = training_status.get("mostRecentTrainingStatus") or {}
-        status_data = recent_status.get("latestTrainingStatusData") or {}
-        status_label = status_data.get("trainingStatus", "Unknown")
-    kpi_card("VO2 Max", f"{vo2_max_val}", f"Status: {status_label}")
-
-with h2:
-    rhr = stats.get("restingHeartRate", "-")
-    kpi_card("Resting HR", f"{rhr} bpm" if rhr != "-" else "-")
-
-with h3:
-    hrv_val = "-"
-    if isinstance(hrv, dict):
-        hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-")
-    kpi_card("HRV (Overnight Avg)", f"{hrv_val} ms" if hrv_val != "-" else "-")
-
-with h4:
-    sleep_string = "-"
-    sleep_score = "-"
-    if isinstance(sleep, dict):
-        dto = sleep.get("dailySleepDTO", {})
-        sleep_secs = dto.get("sleepTimeSeconds")
-        sleep_score = dto.get("sleepScore", "-")
-        if sleep_secs:
-            sleep_string = sec_to_hms(sleep_secs)
-    kpi_card("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
-
-with h5:
-    bb_val = "-"
-    if body_battery_raw:
-        try:
-            last_reading = body_battery_raw[-1]
-            levels = last_reading.get("bodyBatteryValuesArray", [])
-            if levels:
-                bb_val = levels[-1][1]
-        except Exception:  # noqa: BLE001
-            pass
-    kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
-
-# --------------------------------------------------------------------------
-# STRICT MONDAY-SUNDAY WEEKLY VOLUME TARGET TRACKER + TRAINING LOAD
-# --------------------------------------------------------------------------
-st.markdown('<div class="section-title">Weekly Tracker &amp; Load Status</div>', unsafe_allow_html=True)
-w1, w2, w3 = st.columns(3)
-
-# Calculate runs in the current strict Monday - Sunday calendar block
-start_of_week = today - timedelta(days=today.weekday())  # Mon
-end_of_week = start_of_week + timedelta(days=6)          # Sun
-
-if not df.empty:
-    weekly_runs = df[(df["sport"] == "running") & (df["date"] >= start_of_week) & (df["date"] <= end_of_week)]
-    current_weekly_km = weekly_runs["distance_km"].sum()
-else:
-    current_weekly_km = 0.0
-
-kms_left = max(0.0, weekly_goal - current_weekly_km)
-
-with w1:
-    kpi_card(
-        "Current Week Volume", 
-        f"{current_weekly_km:.1f} / {weekly_goal} km", 
-        f"Mon {start_of_week.strftime('%b %d')} - Sun {end_of_week.strftime('%b %d')}"
-    )
-with w2:
-    status_msg = "Goal achieved! 🎉" if kms_left == 0 else f"{kms_left:.1f} km left to hit target"
-    kpi_card("Distance Remaining", f"{kms_left:.1f} km", status_msg)
-with w3:
-    load_val = "-"
-    if isinstance(training_status, dict):
-        load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
-        metrics_status = load_balance.get("metricsTrainingStatus") or {}
-        load_val = metrics_status.get("trainingLoad", "-")
-    kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
-
-# --------------------------------------------------------------------------
-# SPORTS TABS OVERVIEW
-# --------------------------------------------------------------------------
+# Sports Overview Tabs
+st.markdown('<div class="section-title">Activity Progress</div>', unsafe_allow_html=True)
 if df.empty:
-    st.info("No running, cycling, or swimming activities found in your history window.")
+    st.info("No recorded running, cycling, or swimming found.")
 else:
-    tab_run, tab_bike, tab_swim = st.tabs(["🏃 Running", "🚴 Cycling", "🏊 Swimming"])
+    tab_run, tab_bike, tab_swim = st.tabs(["🏃 Run", "🚴 Bike", "🏊 Swim"])
     with tab_run:
         sport_tab(df, "running", "Running")
     with tab_bike:
@@ -475,4 +410,3 @@ else:
         sport_tab(df, "swimming", "Swimming")
 
 st.divider()
-st.caption("Built with Streamlit + garminconnect. Data automatically pulls directly from your Garmin profile.")
