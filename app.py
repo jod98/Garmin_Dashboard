@@ -31,23 +31,25 @@ MUTED = "#8792A6"
 
 CUSTOM_CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght=500;600;700&family=Inter:wght=400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
 
-/* Shrunk from 1.5rem to 1.2rem to force single line on mobile */
+/* Adjusted to ensure title has breathing room and doesn't overlap */
 h1 {{
     font-family: 'Space Grotesk', sans-serif !important;
     font-size: 1.2rem !important; 
     font-weight: 700 !important;
     margin-bottom: 0.25rem !important;
-    white-space: nowrap !important;
+    line-height: 1.2 !important;
+    white-space: normal !important;
 }}
 
+/* Added padding-top to shift everything down slightly from the browser header */
 .block-container {{
-    padding-top: 1rem !important;
+    padding-top: 2rem !important;
     padding-bottom: 2rem !important;
     padding-left: 0.6rem !important;
     padding-right: 0.6rem !important;
