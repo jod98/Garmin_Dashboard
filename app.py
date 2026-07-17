@@ -390,26 +390,41 @@ df = pd.DataFrame(records)
 vo2_max_val = "-"
 status_label = "Active"  # Base default state string fallback
 
-if isinstance(max_metrics, list) and len(max_metrics) > 0:
-    metric_entry = max_metrics[0]
+# Flatten out any wrapped lists or entries to grab a clean lookup dictionary
+metric_entries = []
+if isinstance(max_metrics, list):
+    metric_entries = max_metrics
 elif isinstance(max_metrics, dict):
-    metric_entry = max_metrics
-else:
-    metric_entry = {}
+    metric_entries = [max_metrics]
 
-# Comprehensive extraction fallback for Garmin's varying keys
-vo2_raw = None
-if isinstance(metric_entry, dict):
-    vo2_raw = (
-        metric_entry.get("vo2MaxValue") or 
-        metric_entry.get("vo2Max") or
-        metric_entry.get("genericEntries", [{}])[0].get("vo2Max")
-    )
+for entry in metric_entries:
+    if not isinstance(entry, dict):
+        continue
+        
+    # Pool every possible nested property key Garmin has historically used for VO2 Max
+    possible_keys = ["vo2MaxValue", "vo2Max", "vo2MaxGenericValue", "genericValue"]
+    for k in possible_keys:
+        if entry.get(k):
+            vo2_raw = entry.get(k)
+            break
+            
+    # Hunt inside the standard inner structures if not found at root level
+    if not entry.get("vo2MaxValue") and "genericEntries" in entry:
+        g_entries = entry["genericEntries"]
+        if isinstance(g_entries, list) and len(g_entries) > 0:
+            vo2_raw = g_entries[0].get("vo2Max") or g_entries[0].get("vo2MaxValue")
+            
+    # Hunt specifically inside localized sport lists (e.g. running or cycling arrays)
+    for sport_key in ["splitVO2MaxEntries", "runningVO2MaxEntries", "cyclingVO2MaxEntries"]:
+        if sport_key in entry and isinstance(entry[sport_key], list) and len(entry[sport_key]) > 0:
+            vo2_raw = entry[sport_key][0].get("vo2MaxValue") or entry[sport_key][0].get("vo2Max")
 
-if isinstance(vo2_raw, (int, float)):
-    vo2_max_val = int(round(vo2_raw))
-elif str(vo2_raw).replace('.', '', 1).isdigit():
-    vo2_max_val = int(round(float(vo2_raw)))
+# Safely parse and round the discovered data point
+if 'vo2_raw' in locals() and vo2_raw is not None:
+    if isinstance(vo2_raw, (int, float)):
+        vo2_max_val = int(round(vo2_raw))
+    elif str(vo2_raw).replace('.', '', 1).isdigit():
+        vo2_max_val = int(round(float(vo2_raw)))
 
 # 2. Resilient Training Status extraction
 if isinstance(training_status, dict) and training_status:
