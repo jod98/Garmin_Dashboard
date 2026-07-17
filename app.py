@@ -37,61 +37,52 @@ html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
 
-/* Ultra-compact title sizing */
+/* Shrunk from 1.5rem to 1.2rem to force single line on mobile */
 h1 {{
     font-family: 'Space Grotesk', sans-serif !important;
-    font-size: 1.15rem !important; 
+    font-size: 1.2rem !important; 
     font-weight: 700 !important;
-    margin-top: 0rem !important;
-    margin-bottom: 0.1rem !important;
+    margin-bottom: 0.25rem !important;
     white-space: nowrap !important;
-    line-height: 1.1 !important;
 }}
 
-/* Tightened block container paddings */
 .block-container {{
-    padding-top: 0.4rem !important;
-    padding-bottom: 0.4rem !important;
-    padding-left: 0.5rem !important;
-    padding-right: 0.5rem !important;
-}}
-
-/* Shrink standard Streamlit element vertical gaps */
-[data-testid="stVerticalBlock"] {{
-    gap: 0.4rem !important;
+    padding-top: 1rem !important;
+    padding-bottom: 2rem !important;
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important;
 }}
 
 /* Custom Fixed Grid Overrides for Mobile Viewports */
 .snapshot-grid {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 5px;
-    margin-bottom: 4px;
+    gap: 6px;
+    margin-bottom: 12px;
 }}
 
 .activity-totals-grid {{
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 5px;
-    margin-bottom: 4px;
+    gap: 6px;
+    margin-bottom: 12px;
 }}
 
-/* Reduced height and padding to fit screen boundaries */
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
-    border-radius: 5px;
-    padding: 4px 6px;
+    border-radius: 6px;
+    padding: 6px 8px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    min-height: 56px;
+    min-height: 72px;
     box-sizing: border-box;
 }}
 
 .kpi-label {{
     color: {MUTED};
-    font-size: 0.54rem;
+    font-size: 0.58rem;
     text-transform: uppercase;
     letter-spacing: 0.02em;
     white-space: nowrap;
@@ -100,68 +91,64 @@ h1 {{
 }}
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.95rem;
+    font-size: 1.05rem;
     font-weight: 600;
     color: #E8ECF3;
     line-height: 1.1;
-    margin: 1px 0;
+    margin: 2px 0;
 }}
 .kpi-sub {{
     color: {MUTED};
-    font-size: 0.56rem;
+    font-size: 0.62rem;
     line-height: 1.1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }}
 
-/* Compact section header borders & text */
 .section-title {{
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 600;
-    font-size: 0.85rem;
+    font-size: 0.95rem;
     color: #E8ECF3;
     border-left: 3px solid {ACCENT};
-    padding-left: 6px;
-    margin: 6px 0 4px 0;
+    padding-left: 8px;
+    margin: 14px 0 8px 0;
 }}
 
 .activity-card {{
     background: #18253D;
     border: 1px solid #253552;
-    border-radius: 5px;
-    padding: 6px;
+    border-radius: 6px;
+    padding: 8px;
     box-sizing: border-box;
 }}
 .activity-date {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 0.65rem;
+    font-size: 0.7rem;
     color: {ACCENT};
     font-weight: 600;
-    margin-bottom: 1px;
+    margin-bottom: 2px;
 }}
 .activity-metrics {{
     display: flex;
     justify-content: space-between;
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     color: #E8ECF3;
 }}
 .activity-pace {{
-    font-size: 0.6rem;
+    font-size: 0.65rem;
     color: {MUTED};
-    margin-top: 1px;
+    margin-top: 2px;
 }}
 
 .stTabs [data-baseweb="tab-list"] {{
-    gap: 2px;
+    gap: 4px;
 }}
 .stTabs [data-baseweb="tab"] {{
-    padding-left: 8px !important;
-    padding-right: 8px !important;
-    padding-top: 4px !important;
-    padding-bottom: 4px !important;
-    font-size: 0.75rem !important;
-    height: auto !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    font-size: 0.8rem !important;
 }}
 </style>
 """
@@ -490,8 +477,8 @@ if isinstance(training_status, dict):
 # --------------------------------------------------------------------------
 # MAIN DASHBOARD INTERFACE
 # --------------------------------------------------------------------------
-# Combined title and synchronization info to preserve screen footprint
-st.markdown(f"<h1>Performance & Health Dashboard <span style='font-size:0.65rem; color:{MUTED}; font-weight:normal; float:right; margin-top:0.4rem;'>Sync: {dt.datetime.now().strftime('%H:%M')}</span></h1>", unsafe_allow_html=True)
+st.title("Performance & Health Dashboard")
+st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
 # Render Mobile-Safe 2x3 Grid Container
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
@@ -519,3 +506,5 @@ else:
         sport_tab(df, "cycling", start_of_week, end_of_week)
     with tab_swim:
         sport_tab(df, "swimming", start_of_week, end_of_week)
+
+st.divider()
