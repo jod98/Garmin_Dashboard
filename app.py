@@ -1,14 +1,13 @@
 """
-Performance & Health Dashboard (Mobile Optimized)
+Performance & Health Dashboard (Mobile-First 2x3 Grid)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
-from Garmin Connect for running, cycling, and swimming.
+from Garmin Connect with structured health rows.
 """
 
 import datetime as dt
 from datetime import timedelta
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 from garminconnect import (
     Garmin,
@@ -21,16 +20,14 @@ from garminconnect import (
 # PAGE CONFIG + MOBILE STYLE
 # --------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Garmin Pulse",
+    page_title="Garmin Dashboard",
     page_icon="📈",
-    layout="centered",  # Better for single-column mobile viewports
-    initial_sidebar_state="collapsed",  # Keep sidebar out of the way on mobile
+    layout="centered",  
+    initial_sidebar_state="collapsed",  
 )
 
 ACCENT = "#2DD4BF"
-ACCENT_2 = "#F5A623"
 MUTED = "#8792A6"
-SPORT_COLORS = {"running": "#2DD4BF", "cycling": "#F5A623", "swimming": "#7C9CF5"}
 
 CUSTOM_CSS = f"""
 <style>
@@ -43,60 +40,62 @@ h1, h2, h3, .metric-label {{
     font-family: 'Space Grotesk', sans-serif !important;
 }}
 
-/* Tighten mobile padding */
 .block-container {{
-    padding-top: 1.5rem !important;
+    padding-top: 1rem !important;
     padding-bottom: 2rem !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+    padding-left: 0.8rem !important;
+    padding-right: 0.8rem !important;
 }}
 
-/* Compact KPI cards for small screens */
+/* Ultra-compact 3-column cards for mobile rows */
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
-    border-radius: 8px;
-    padding: 12px 14px;
-    margin-bottom: 8px;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
     height: 100%;
 }}
 .kpi-label {{
     color: {MUTED};
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
     margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }}
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 1.4rem;
+    font-size: 1.15rem;
     font-weight: 600;
     color: #E8ECF3;
     line-height: 1.1;
 }}
 .kpi-sub {{
     color: {MUTED};
-    font-size: 0.75rem;
-    margin-top: 2px;
+    font-size: 0.68rem;
+    margin-top: 1px;
+    line-height: 1.1;
 }}
 .section-title {{
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 600;
-    font-size: 1.05rem;
+    font-size: 0.98rem;
     color: #E8ECF3;
     border-left: 3px solid {ACCENT};
     padding-left: 8px;
-    margin: 18px 0 10px 0;
+    margin: 16px 0 10px 0;
 }}
 
-/* Ensure tabs stretch full mobile width nicely */
 .stTabs [data-baseweb="tab-list"] {{
-    gap: 8px;
+    gap: 4px;
 }}
 .stTabs [data-baseweb="tab"] {{
-    padding-left: 8px !important;
-    padding-right: 8px !important;
-    font-size: 0.9rem !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+    font-size: 0.85rem !important;
 }}
 </style>
 """
@@ -117,13 +116,13 @@ def get_garmin_client():
         client.login()
         return client, None
     except GarminConnectAuthenticationError:
-        return None, "Login failed - check your Garmin email/password in secrets."
+        return None, "Login failed - check your Garmin credentials."
     except GarminConnectTooManyRequestsError:
-        return None, "Garmin is rate-limiting logins right now. Try again shortly."
+        return None, "Garmin rate limit active. Try again shortly."
     except GarminConnectConnectionError:
-        return None, "Could not reach Garmin Connect. Try again shortly."
+        return None, "Could not reach Garmin Connect."
     except Exception as exc:  # noqa: BLE001
-        return None, f"Unexpected error connecting to Garmin: {exc}"
+        return None, f"Error: {exc}"
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -172,7 +171,22 @@ def fetch_training_status(_client, date_str):
 
 
 # --------------------------------------------------------------------------
-# MOBILITY & RENDERING HELPERS
+# DATE SUFFIX UTILITY
+# --------------------------------------------------------------------------
+def get_date_suffix(day):
+    if 11 <= day <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
+def format_week_range(start_dt, end_dt):
+    s_suffix = get_date_suffix(start_dt.day)
+    e_suffix = get_date_suffix(end_dt.day)
+    return f"{start_dt.strftime('%a %d')}{s_suffix} {start_dt.strftime('%b')} - {end_dt.strftime('%a %d')}{e_suffix} {end_dt.strftime('%b')}"
+
+
+# --------------------------------------------------------------------------
+# HELPERS
 # --------------------------------------------------------------------------
 def m_to_km(m):
     return round((m or 0) / 1000, 2)
@@ -207,77 +221,39 @@ def kpi_card(label, value, sub=""):
     )
 
 
-def render_mobile_grid(items):
-    """
-    Splits a list of KPI item dicts into rows of 2 columns max.
-    Streamlit handles 2 side-by-side items decently on modern smartphones.
-    """
-    for i in range(0, len(items), 2):
-        row_items = items[i:i+2]
-        cols = st.columns(len(row_items))
-        for idx, item in enumerate(row_items):
-            with cols[idx]:
-                kpi_card(item["label"], item["value"], item.get("sub", ""))
-
-
-def sport_tab(df, sport_key, sport_label):
+def sport_tab(df, sport_key, start_of_week, end_of_week, week_range_string):
     sport_df = df[df["sport"] == sport_key].copy()
-    if sport_df.empty:
-        st.info(f"No {sport_label.lower()} activities found.")
-        return
-
-    total_dist = sport_df["distance_km"].sum()
-    total_time = sport_df["duration_s"].sum()
-    avg_hr_series = sport_df["avg_hr"].dropna()
+    
+    # Filter strictly down to this week's data slice for totals
+    this_week_df = sport_df[(sport_df["date"] >= start_of_week) & (sport_df["date"] <= end_of_week)].copy()
+    
+    total_dist = this_week_df["distance_km"].sum() if not this_week_df.empty else 0.0
+    total_time = this_week_df["duration_s"].sum() if not this_week_df.empty else 0
+    avg_hr_series = this_week_df["avg_hr"].dropna() if not this_week_df.empty else pd.Series()
     avg_hr = round(avg_hr_series.mean(), 0) if not avg_hr_series.empty else "-"
-    best_dist = sport_df["distance_km"].max()
+    best_dist = this_week_df["distance_km"].max() if not this_week_df.empty else 0.0
 
-    # Mobile optimized 2x2 summary layout
-    sport_metrics = [
-        {"label": "Total Distance", "value": f"{total_dist:.1f} km", "sub": f"{len(sport_df)} sessions"},
-        {"label": "Total Time", "value": sec_to_hms(total_time)},
-        {"label": "Avg Heart Rate", "value": f"{avg_hr} bpm" if avg_hr != "-" else "-"},
-        {"label": "Longest Session", "value": f"{best_dist:.1f} km"}
-    ]
-    render_mobile_grid(sport_metrics)
+    # 2x2 Grid for Activity Totals
+    c1, c2 = st.columns(2)
+    with c1:
+        kpi_card("Total Distance", f"{total_dist:.1f} km", f"{len(this_week_df)} sessions")
+        kpi_card("Avg Heart Rate", f"{avg_hr} bpm" if avg_hr != "-" else "-")
+    with c2:
+        kpi_card("Total Time", sec_to_hms(total_time))
+        kpi_card("Longest Session", f"{best_dist:.1f} km")
 
-    st.markdown('<div class="section-title">Distance Trend</div>', unsafe_allow_html=True)
-    trend = sport_df.sort_values("date")
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=trend["date"],
-            y=trend["distance_km"],
-            marker_color=SPORT_COLORS[sport_key],
-            name="KM",
-        )
-    )
-    # Reduced height and minimal margins for tiny mobile screens
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=5, r=5, t=5, b=5),
-        height=180,
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown('<div class="section-title">Last 5 Activities</div>', unsafe_allow_html=True)
-    
-    # Pruned down table columns to prevent tiny horizontal scroll chains on mobile
-    show_cols = ["date", "distance_km", "duration_hms", "pace"]
-    df_display = sport_df.sort_values("date", ascending=False).head(5)[show_cols].copy()
-    df_display.columns = ["Date", "Dist (km)", "Time", "Pace"]
-    
-    st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.markdown(f'<div class="section-title">This Week Activities ({week_range_string})</div>', unsafe_allow_html=True)
+    if not this_week_df.empty:
+        show_cols = ["date", "distance_km", "duration_hms", "pace"]
+        df_display = this_week_df.sort_values("date", ascending=False)[show_cols].copy()
+        df_display.columns = ["Date", "Dist (km)", "Time", "Pace"]
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No activities recorded yet for this calendar week.")
 
 
 # --------------------------------------------------------------------------
-# SIDEBAR (FILTERS COLLAPSED BY DEFAULT ON MOBILE)
+# SIDEBAR
 # --------------------------------------------------------------------------
 st.sidebar.markdown("### Settings")
 days_back = st.sidebar.slider("History Window (days)", 7, 90, 28)
@@ -286,7 +262,7 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
     st.rerun()
 
 # --------------------------------------------------------------------------
-# CONNECT & FETCH
+# CONNECT & CALENDAR CALCULATIONS
 # --------------------------------------------------------------------------
 client, error = get_garmin_client()
 if error:
@@ -296,8 +272,15 @@ if error:
 st.session_state.client = client
 
 today = dt.date.today()
-start_date = today - timedelta(days=days_back)
+# Ensure history window covers at least the beginning of the current week slice
+history_days = max(days_back, today.weekday() + 1)
+start_date = today - timedelta(days=history_days)
 today_str = today.strftime("%Y-%m-%d")
+
+# Dynamic Week Ranges
+start_of_week = today - timedelta(days=today.weekday())  # Current Monday
+end_of_week = start_of_week + timedelta(days=6)          # Current Sunday
+week_range_string = format_week_range(start_of_week, end_of_week)
 
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
@@ -306,7 +289,7 @@ training_status = fetch_training_status(client, today_str)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 150)
 
-# Process raw fields
+# Process activities
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -331,15 +314,12 @@ for a in raw_activities:
     duration_s = a.get("duration", 0) or 0
     records.append(
         {
-            "activity_id": a.get("activityId"),
             "sport": sport,
             "date": a_date,
-            "name": a.get("activityName", "Untitled"),
             "distance_km": m_to_km(distance_m),
             "duration_s": duration_s,
             "duration_hms": sec_to_hms(duration_s),
             "avg_hr": a.get("averageHR"),
-            "max_hr": a.get("maxHR"),
             "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
         }
     )
@@ -347,12 +327,12 @@ for a in raw_activities:
 df = pd.DataFrame(records)
 
 # --------------------------------------------------------------------------
-# RENDER UI
+# MAIN UI
 # --------------------------------------------------------------------------
-st.title("Garmin Pulse")
-st.caption(f"Synced: {dt.datetime.now().strftime('%H:%M')}")
+st.title("Garmin Dashboard")
+st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
-# Extract Health Stats
+# Parse Data Fields
 vo2_max_val = "-"
 status_label = "Unknown"
 if isinstance(training_status, dict):
@@ -385,28 +365,50 @@ if body_battery_raw:
     except Exception:  # noqa: BLE001
         pass
 
-# Render Health Dashboard to clean mobile grid
-st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
-health_metrics = [
-    {"label": "VO2 Max", "value": f"{vo2_max_val}", "sub": status_label},
-    {"label": "Resting HR", "value": f"{rhr} bpm" if rhr != "-" else "-"},
-    {"label": "HRV (Overnight)", "value": f"{hrv_val} ms" if hrv_val != "-" else "-"},
-    {"label": "Body Battery", "value": f"{bb_val}" if bb_val != "-" else "-"},
-    {"label": "Sleep Duration", "value": f"{sleep_string}", "sub": f"Score: {sleep_score}"}
-]
-render_mobile_grid(health_metrics)
+load_val = "-"
+if isinstance(training_status, dict):
+    load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
+    metrics_status = load_balance.get("metricsTrainingStatus") or {}
+    load_val = metrics_status.get("trainingLoad", "-")
 
-# Sports Overview Tabs
-st.markdown('<div class="section-title">Activity Progress</div>', unsafe_allow_html=True)
+# --------------------------------------------------------------------------
+# TODAY'S SNAPSHOT: SPECIFIC STRICT 2x3 GRID FOR MOBILE
+# --------------------------------------------------------------------------
+st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
+
+# Row 1: VO2 Max, Resting HR, HRV
+r1_c1, r1_c2, r1_c3 = st.columns(3)
+with r1_c1:
+    kpi_card("VO2 Max", f"{vo2_max_val}", status_label)
+with r1_c2:
+    kpi_card("Resting HR", f"{rhr} bpm" if rhr != "-" else "-")
+with r1_c3:
+    kpi_card("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-")
+
+# Row 2: Body Battery, Sleep, Training Load
+r2_c1, r2_c2, r2_c3 = st.columns(3)
+with r2_c1:
+    kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
+with r2_c2:
+    kpi_card("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
+with r2_c3:
+    kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
+
+
+# --------------------------------------------------------------------------
+# ACTIVITY PROGRESS SECTION
+# --------------------------------------------------------------------------
+st.markdown(f'<div class="section-title">Activity Progress ({week_range_string})</div>', unsafe_allow_html=True)
+
 if df.empty:
-    st.info("No recorded running, cycling, or swimming found.")
+    st.info("No activities tracked inside your current history range.")
 else:
     tab_run, tab_bike, tab_swim = st.tabs(["🏃 Run", "🚴 Bike", "🏊 Swim"])
     with tab_run:
-        sport_tab(df, "running", "Running")
+        sport_tab(df, "running", start_of_week, end_of_week, week_range_string)
     with tab_bike:
-        sport_tab(df, "cycling", "Cycling")
+        sport_tab(df, "cycling", start_of_week, end_of_week, week_range_string)
     with tab_swim:
-        sport_tab(df, "swimming", "Swimming")
+        sport_tab(df, "swimming", start_of_week, end_of_week, week_range_string)
 
 st.divider()
