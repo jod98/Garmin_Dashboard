@@ -231,7 +231,6 @@ def fetch_max_metrics_with_lookback(_client, base_date):
         target_date_str = (base_date - timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
             res = _client.get_max_metrics(target_date_str)
-            # Check if we got back valid data containing actual VO2 entries
             if res:
                 if isinstance(res, list) and len(res) > 0:
                     return res
@@ -389,7 +388,7 @@ df = pd.DataFrame(records)
 
 # 1. Extract VO2 Max values out of the processed Max Metrics dataset
 vo2_max_val = "-"
-status_label = "Unknown"
+status_label = "Active"  # Base default state string fallback
 
 if isinstance(max_metrics, list) and len(max_metrics) > 0:
     metric_entry = max_metrics[0]
@@ -398,25 +397,46 @@ elif isinstance(max_metrics, dict):
 else:
     metric_entry = {}
 
-vo2_raw = (
-    metric_entry.get("vo2MaxValue") or 
-    metric_entry.get("genericEntries", [{}])[0].get("vo2Max") or
-    metric_entry.get("vo2Max", "-")
-)
+# Comprehensive extraction fallback for Garmin's varying keys
+vo2_raw = None
+if isinstance(metric_entry, dict):
+    vo2_raw = (
+        metric_entry.get("vo2MaxValue") or 
+        metric_entry.get("vo2Max") or
+        metric_entry.get("genericEntries", [{}])[0].get("vo2Max")
+    )
 
 if isinstance(vo2_raw, (int, float)):
     vo2_max_val = int(round(vo2_raw))
+elif str(vo2_raw).replace('.', '', 1).isdigit():
+    vo2_max_val = int(round(float(vo2_raw)))
 
-# Parse context label for the training status box
-if isinstance(training_status, dict):
-    recent_status = training_status.get("mostRecentTrainingStatus") or {}
-    status_data = recent_status.get("latestTrainingStatusData") or {}
-    status_label = status_data.get("trainingStatus") or ("Active" if vo2_max_val != "-" else "Unknown")
-elif vo2_max_val != "-":
-    status_label = "Active"
+# 2. Resilient Training Status extraction
+if isinstance(training_status, dict) and training_status:
+    recent_status = training_status.get("mostRecentTrainingStatus", {})
+    if isinstance(recent_status, dict):
+        status_data = recent_status.get("latestTrainingStatusData", {})
+        if isinstance(status_data, dict):
+            status_label = status_data.get("trainingStatus") or status_label
+            
+    if status_label == "Active" or not status_label:
+        ct_status = training_status.get("computedTrainingStatus")
+        if ct_status:
+            status_label = str(ct_status).title()
+            
+    if isinstance(training_status, str):
+        status_label = training_status
+else:
+    if vo2_max_val != "-":
+        status_label = "Productive"
+    else:
+        status_label = "No Data"
 
-# 2. Parse remaining daily vital stats
-rhr = stats.get("restingHeartRate", "-")
+# Clean up string formatting (e.g., "PRODUCTIVE_TRAINING" -> "Productive Training")
+status_label = str(status_label).replace("_", " ").title()
+
+# 3. Parse remaining daily vital stats
+rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
 
 hrv_val = "-"
 if isinstance(hrv, dict):
@@ -426,13 +446,14 @@ sleep_string = "-"
 sleep_score = "-"
 if isinstance(sleep, dict):
     dto = sleep.get("dailySleepDTO", {})
-    sleep_secs = dto.get("sleepTimeSeconds")
-    sleep_score = dto.get("sleepScore", "-")
-    if sleep_secs:
-        sleep_string = sec_to_hms(sleep_secs)
+    if isinstance(dto, dict):
+        sleep_secs = dto.get("sleepTimeSeconds")
+        sleep_score = dto.get("sleepScore", "-")
+        if sleep_secs:
+            sleep_string = sec_to_hms(sleep_secs)
 
 bb_val = "-"
-if body_battery_raw:
+if body_battery_raw and isinstance(body_battery_raw, list):
     try:
         levels = body_battery_raw[-1].get("bodyBatteryValuesArray", [])
         if levels:
@@ -442,9 +463,11 @@ if body_battery_raw:
 
 load_val = "-"
 if isinstance(training_status, dict):
-    load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
-    metrics_status = load_balance.get("metricsTrainingStatus") or {}
-    load_val = metrics_status.get("trainingLoad", "-")
+    load_balance = training_status.get("mostRecentTrainingLoadBalance", {})
+    if isinstance(load_balance, dict):
+        metrics_status = load_balance.get("metricsTrainingStatus", {})
+        if isinstance(metrics_status, dict):
+            load_val = metrics_status.get("trainingLoad", "-")
 
 
 # --------------------------------------------------------------------------
