@@ -222,11 +222,24 @@ def fetch_training_status(_client, date_str):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_max_metrics(_client, date_str):
-    try:
-        return _client.get_max_metrics(date_str)
-    except Exception:  # noqa: BLE001
-        return {}
+def fetch_max_metrics_with_lookback(_client, base_date):
+    """
+    Looks back up to 7 days sequentially to locate the most recent populated 
+    Max Metrics dictionary (since VO2 Max calculation isn't guaranteed daily).
+    """
+    for offset in range(8):
+        target_date_str = (base_date - timedelta(days=offset)).strftime("%Y-%m-%d")
+        try:
+            res = _client.get_max_metrics(target_date_str)
+            # Check if we got back valid data containing actual VO2 entries
+            if res:
+                if isinstance(res, list) and len(res) > 0:
+                    return res
+                if isinstance(res, dict) and len(res.keys()) > 2:
+                    return res
+        except Exception:  # noqa: BLE001
+            continue
+    return {}
 
 
 # --------------------------------------------------------------------------
@@ -325,7 +338,10 @@ stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
-max_metrics = fetch_max_metrics(client, today_str)
+
+# Use our multi-day lookback wrapper explicitly for the Max Metrics endpoint
+max_metrics = fetch_max_metrics_with_lookback(client, today)
+
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 150)
 
@@ -371,7 +387,7 @@ df = pd.DataFrame(records)
 # DATA PARSING & EXTRACTION
 # --------------------------------------------------------------------------
 
-# 1. Parse VO2 Max from the dedicated endpoint structures
+# 1. Extract VO2 Max values out of the processed Max Metrics dataset
 vo2_max_val = "-"
 status_label = "Unknown"
 
@@ -391,7 +407,7 @@ vo2_raw = (
 if isinstance(vo2_raw, (int, float)):
     vo2_max_val = int(round(vo2_raw))
 
-# Parse context label for the training status
+# Parse context label for the training status box
 if isinstance(training_status, dict):
     recent_status = training_status.get("mostRecentTrainingStatus") or {}
     status_data = recent_status.get("latestTrainingStatusData") or {}
