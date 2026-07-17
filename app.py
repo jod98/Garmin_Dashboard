@@ -224,18 +224,27 @@ def fetch_training_status(_client, date_str):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_max_metrics_with_lookback(_client, base_date):
     """
-    Looks back up to 7 days sequentially to locate the most recent populated 
-    Max Metrics dictionary (since VO2 Max calculation isn't guaranteed daily).
+    Looks back up to 30 days sequentially to locate the most recent populated 
+    Max Metrics dictionary that contains verified numerical VO2 max items.
     """
-    for offset in range(8):
+    for offset in range(30):
         target_date_str = (base_date - timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
             res = _client.get_max_metrics(target_date_str)
             if res:
-                if isinstance(res, list) and len(res) > 0:
-                    return res
-                if isinstance(res, dict) and len(res.keys()) > 2:
-                    return res
+                entries = res if isinstance(res, list) else [res]
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        # Ensure this targeted date actually has a meaningful payload
+                        keys_to_verify = [
+                            "vo2MaxValue", "vo2Max", "vo2MaxGenericValue", 
+                            "genericValue", "splitVO2MaxEntries", 
+                            "runningVO2MaxEntries", "cyclingVO2MaxEntries"
+                        ]
+                        if any(k in entry and entry[k] for k in keys_to_verify):
+                            return res
+                        if "genericEntries" in entry and isinstance(entry["genericEntries"], list) and len(entry["genericEntries"]) > 0:
+                            return res
         except Exception:  # noqa: BLE001
             continue
     return {}
@@ -338,7 +347,7 @@ hrv = fetch_hrv(client, today_str)
 sleep = fetch_sleep(client, today_str)
 training_status = fetch_training_status(client, today_str)
 
-# Use our multi-day lookback wrapper explicitly for the Max Metrics endpoint
+# Use our updated 30-day lookback validator wrapper for the Max Metrics endpoint
 max_metrics = fetch_max_metrics_with_lookback(client, today)
 
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
