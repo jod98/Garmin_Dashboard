@@ -1,7 +1,7 @@
 """
-Performance & Health Dashboard (Mobile-First 2x3 Grid)
+Performance & Health Dashboard (Mobile-First 2x3 & 2x2 Grid Layouts)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
-from Garmin Connect with structured health rows.
+from Garmin Connect with structured health and activity rows.
 """
 
 import datetime as dt
@@ -36,7 +36,16 @@ CUSTOM_CSS = f"""
 html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
-h1, h2, h3, .metric-label {{
+
+/* Shrink the main header font size by half for mobile viewports */
+h1 {{
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-size: 1.5rem !important; 
+    font-weight: 700 !important;
+    margin-bottom: 0.25rem !important;
+}}
+
+h2, h3, .metric-label {{
     font-family: 'Space Grotesk', sans-serif !important;
 }}
 
@@ -47,7 +56,7 @@ h1, h2, h3, .metric-label {{
     padding-right: 0.8rem !important;
 }}
 
-/* Ultra-compact 3-column cards for mobile rows */
+/* Ultra-compact cards for mobile rows */
 .kpi-card {{
     background: #131C2E;
     border: 1px solid #1E2A40;
@@ -87,6 +96,33 @@ h1, h2, h3, .metric-label {{
     border-left: 3px solid {ACCENT};
     padding-left: 8px;
     margin: 16px 0 10px 0;
+}}
+
+/* Compact 2x2 grid card styles for specific mobile activities */
+.activity-card {{
+    background: #18253D;
+    border: 1px solid #253552;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+}}
+.activity-date {{
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.75rem;
+    color: {ACCENT};
+    font-weight: 600;
+    margin-bottom: 4px;
+}}
+.activity-metrics {{
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: #E8ECF3;
+}}
+.activity-pace {{
+    font-size: 0.7rem;
+    color: {MUTED};
+    margin-top: 2px;
 }}
 
 .stTabs [data-baseweb="tab-list"] {{
@@ -171,21 +207,6 @@ def fetch_training_status(_client, date_str):
 
 
 # --------------------------------------------------------------------------
-# DATE SUFFIX UTILITY
-# --------------------------------------------------------------------------
-def get_date_suffix(day):
-    if 11 <= day <= 13:
-        return "th"
-    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-
-
-def format_week_range(start_dt, end_dt):
-    s_suffix = get_date_suffix(start_dt.day)
-    e_suffix = get_date_suffix(end_dt.day)
-    return f"{start_dt.strftime('%a %d')}{s_suffix} {start_dt.strftime('%b')} - {end_dt.strftime('%a %d')}{e_suffix} {end_dt.strftime('%b')}"
-
-
-# --------------------------------------------------------------------------
 # HELPERS
 # --------------------------------------------------------------------------
 def m_to_km(m):
@@ -221,10 +242,10 @@ def kpi_card(label, value, sub=""):
     )
 
 
-def sport_tab(df, sport_key, start_of_week, end_of_week, week_range_string):
+def sport_tab(df, sport_key, start_of_week, end_of_week):
     sport_df = df[df["sport"] == sport_key].copy()
     
-    # Filter strictly down to this week's data slice for totals
+    # Filter strictly down to this calendar week slice
     this_week_df = sport_df[(sport_df["date"] >= start_of_week) & (sport_df["date"] <= end_of_week)].copy()
     
     total_dist = this_week_df["distance_km"].sum() if not this_week_df.empty else 0.0
@@ -242,12 +263,33 @@ def sport_tab(df, sport_key, start_of_week, end_of_week, week_range_string):
         kpi_card("Total Time", sec_to_hms(total_time))
         kpi_card("Longest Session", f"{best_dist:.1f} km")
 
-    st.markdown(f'<div class="section-title">This Week Activities ({week_range_string})</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">This Week: Activities</div>', unsafe_allow_html=True)
+    
     if not this_week_df.empty:
-        show_cols = ["date", "distance_km", "duration_hms", "pace"]
-        df_display = this_week_df.sort_values("date", ascending=False)[show_cols].copy()
-        df_display.columns = ["Date", "Dist (km)", "Time", "Pace"]
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        sorted_week_df = this_week_df.sort_values("date", ascending=False)
+        
+        # Build strict 2x2 mobile grid chunking for listing the logs
+        for i in range(0, len(sorted_week_df), 2):
+            cols = st.columns(2)
+            for j in range(2):
+                if i + j < len(sorted_week_df):
+                    row = sorted_week_df.iloc[i + j]
+                    date_label = row["date"].strftime("%a, %b %d")
+                    pace_line = f'<div class="activity-pace">Pace: {row["pace"]}</div>' if row["pace"] != "-" else ""
+                    
+                    cols[j].markdown(
+                        f"""
+                        <div class="activity-card">
+                            <div class="activity-date">{date_label}</div>
+                            <div class="activity-metrics">
+                                <strong>{row['distance_km']:.2f} km</strong>
+                                <span>{row['duration_hms']}</span>
+                            </div>
+                            {pace_line}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
     else:
         st.caption("No activities recorded yet for this calendar week.")
 
@@ -272,15 +314,13 @@ if error:
 st.session_state.client = client
 
 today = dt.date.today()
-# Ensure history window covers at least the beginning of the current week slice
 history_days = max(days_back, today.weekday() + 1)
 start_date = today - timedelta(days=history_days)
 today_str = today.strftime("%Y-%m-%d")
 
-# Dynamic Week Ranges
-start_of_week = today - timedelta(days=today.weekday())  # Current Monday
-end_of_week = start_of_week + timedelta(days=6)          # Current Sunday
-week_range_string = format_week_range(start_of_week, end_of_week)
+# Static week parameters for data parsing
+start_of_week = today - timedelta(days=today.weekday())  # Mon
+end_of_week = start_of_week + timedelta(days=6)          # Sun
 
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
@@ -329,7 +369,7 @@ df = pd.DataFrame(records)
 # --------------------------------------------------------------------------
 # MAIN UI
 # --------------------------------------------------------------------------
-st.title("Garmin Dashboard")
+st.title("Performance & Health Dashboard")
 st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
 # Parse Data Fields
@@ -372,20 +412,20 @@ if isinstance(training_status, dict):
     load_val = metrics_status.get("trainingLoad", "-")
 
 # --------------------------------------------------------------------------
-# TODAY'S SNAPSHOT: SPECIFIC STRICT 2x3 GRID FOR MOBILE
+# TODAY'S SNAPSHOT (STRICT 2x3 LAYOUT MATRIX)
 # --------------------------------------------------------------------------
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
-# Row 1: VO2 Max, Resting HR, HRV
+# Row 1: VO2 Max, Rest Heart Rate, HRV
 r1_c1, r1_c2, r1_c3 = st.columns(3)
 with r1_c1:
     kpi_card("VO2 Max", f"{vo2_max_val}", status_label)
 with r1_c2:
-    kpi_card("Resting HR", f"{rhr} bpm" if rhr != "-" else "-")
+    kpi_card("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-")
 with r1_c3:
     kpi_card("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-")
 
-# Row 2: Body Battery, Sleep, Training Load
+# Row 2: Body Battery, Sleep Duration/Score, Training Load
 r2_c1, r2_c2, r2_c3 = st.columns(3)
 with r2_c1:
     kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
@@ -396,19 +436,19 @@ with r2_c3:
 
 
 # --------------------------------------------------------------------------
-# ACTIVITY PROGRESS SECTION
+# ACTIVITY PROGRESS SECTION (2x2 ACTIVITY LOGGER DETAILED UNDER EACH TAB)
 # --------------------------------------------------------------------------
-st.markdown(f'<div class="section-title">Activity Progress ({week_range_string})</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
 
 if df.empty:
     st.info("No activities tracked inside your current history range.")
 else:
     tab_run, tab_bike, tab_swim = st.tabs(["🏃 Run", "🚴 Bike", "🏊 Swim"])
     with tab_run:
-        sport_tab(df, "running", start_of_week, end_of_week, week_range_string)
+        sport_tab(df, "running", start_of_week, end_of_week)
     with tab_bike:
-        sport_tab(df, "cycling", start_of_week, end_of_week, week_range_string)
+        sport_tab(df, "cycling", start_of_week, end_of_week)
     with tab_swim:
-        sport_tab(df, "swimming", start_of_week, end_of_week, week_range_string)
+        sport_tab(df, "swimming", start_of_week, end_of_week)
 
 st.divider()
