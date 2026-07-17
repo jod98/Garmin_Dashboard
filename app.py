@@ -44,7 +44,7 @@ SPORT_COLORS = {"running": "#2DD4BF", "cycling": "#F5A623", "swimming": "#7C9CF5
 
 CUSTOM_CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght=500;600;700&family=Inter:wght=400;500;600;700&display=swap');
 
 html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
@@ -425,7 +425,6 @@ with c4:
 with c5:
     load_val = "-"
     if isinstance(training_status, dict):
-        # Defensively look up nested fields using fallbacks so it doesn't break if keys are missing
         load_balance = training_status.get("mostRecentTrainingLoadBalance") or {}
         metrics_status = load_balance.get("metricsTrainingStatus") or {}
         load_val = metrics_status.get("trainingLoad", "-")
@@ -518,16 +517,24 @@ with tab_health:
     with s3:
         kpi_card("REM Sleep", rem)
 
-    st.markdown('<div class="section-title">Training Status</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Fitness Metrics</div>', unsafe_allow_html=True)
+    status_label = "Unknown"
+    vo2_max_val = "-"
+    
     if isinstance(training_status, dict):
-        status_label = (
-            training_status.get("mostRecentTrainingStatus", {})
-            .get("latestTrainingStatusData", {})
-            .get("trainingStatus", "Unknown")
-        )
-        st.write(f"Current status: **{status_label}**")
-    else:
-        st.caption("Training status not available.")
+        # Safely capture Training Status
+        recent_status = training_status.get("mostRecentTrainingStatus") or {}
+        status_data = recent_status.get("latestTrainingStatusData") or {}
+        status_label = status_data.get("trainingStatus", "Unknown")
+        
+        # Safely capture VO2 Max value
+        vo2_max_val = training_status.get("vo2Max", "-")
+
+    col_stat, col_vo2 = st.columns(2)
+    with col_stat:
+        kpi_card("Training Status", status_label)
+    with col_vo2:
+        kpi_card("VO2 Max", f"{vo2_max_val}" if vo2_max_val != "-" else "-")
 
 st.divider()
 st.caption(
