@@ -1,5 +1,3 @@
-Everything is working great with this version of the code: 
-
 '"""
 Performance & Health Dashboard (Mobile-First Fixed 2x3 & 2x2 Grids)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
