@@ -537,4 +537,4 @@ else:
     with tab_swim:
         sport_tab(df, "swimming", start_of_week, end_of_week)
 
-st.divider()'
+st.divider()
