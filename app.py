@@ -528,7 +528,6 @@ sleep_date_used = "-"
 if sleep:
 
     sleep_date_used = sleep_date
-
     dto = sleep.get("dailySleepDTO", {})
 
     if isinstance(dto, dict):
@@ -543,7 +542,12 @@ if sleep:
     if score is not None:
         sleep_score = score
 
-with st.expander("Sleep Debug", expanded=False):
+with st.expander("Sleep Debug", expanded=True):
+
+    st.write("Sleep record date:", sleep_date_used)
+
+    st.write("Sleep score found:", sleep_score)
+
     st.json(sleep)
 
 bb_val = "-"
