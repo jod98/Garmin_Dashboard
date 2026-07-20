@@ -204,11 +204,34 @@ def fetch_hrv(_client, date_str):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_sleep(_client, date_str):
-    try:
-        return _client.get_sleep_data(date_str)
-    except Exception:  # noqa: BLE001
-        return None
+def fetch_latest_sleep(_client):
+    """
+    Searches backwards for the most recent sleep record.
+    Returns:
+        (date_string, sleep_json)
+    """
+
+    for i in range(30):
+
+        d = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+
+        try:
+
+            sleep = _client.get_sleep_data(d)
+
+            if not sleep:
+                continue
+
+            dto = sleep.get("dailySleepDTO", {})
+
+            if dto.get("sleepTimeSeconds"):
+
+                return d, sleep
+
+        except Exception:
+            continue
+
+    return None, None
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -297,21 +320,49 @@ def find_vo2(obj):
 
 
 def find_sleep_score(obj):
-    """Recursively searches any Garmin response for a sleep score."""
+    """
+    Searches specifically for Garmin Sleep Score.
+    """
+
     if isinstance(obj, dict):
-        for key, value in obj.items():
-            kl=str(key).lower()
-            if kl in ("sleepscore","overallscore","score"):
-                if isinstance(value,(int,float)) and 0 <= value <= 100:
-                    return int(value)
-            result=find_sleep_score(value)
+
+        # Garmin sometimes returns this
+        if "sleepScore" in obj:
+
+            value = obj["sleepScore"]
+
+            if isinstance(value, (int, float)):
+                return int(value)
+
+            if isinstance(value, dict):
+                if "overallScore" in value:
+                    return value["overallScore"]
+
+        # Garmin sometimes returns this
+        if "sleepScores" in obj:
+
+            scores = obj["sleepScores"]
+
+            if isinstance(scores, dict):
+                if "overallScore" in scores:
+                    return scores["overallScore"]
+
+        for value in obj.values():
+
+            result = find_sleep_score(value)
+
             if result is not None:
                 return result
-    elif isinstance(obj,list):
+
+    elif isinstance(obj, list):
+
         for item in obj:
-            result=find_sleep_score(item)
+
+            result = find_sleep_score(item)
+
             if result is not None:
                 return result
+
     return None
 
 
@@ -380,7 +431,7 @@ end_of_week = start_of_week + timedelta(days=6)
 # Execute API queries
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
-sleep = fetch_sleep(client, today_str)
+sleep_date, sleep = fetch_latest_sleep(client)
 training_status = fetch_training_status(client, today_str)
 user_profile = fetch_user_profile(client)
 max_metrics = fetch_max_metrics_with_lookback(client)
@@ -472,14 +523,23 @@ hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, 
 
 sleep_string = "-"
 sleep_score = "-"
-if isinstance(sleep, dict):
+sleep_date_used = "-"
+
+if sleep:
+
+    sleep_date_used = sleep_date
+
     dto = sleep.get("dailySleepDTO", {})
+
     if isinstance(dto, dict):
-        sleep_secs = dto.get("sleepTimeSeconds")
-        if sleep_secs:
-            sleep_string = sec_to_hms(sleep_secs)
+
+        secs = dto.get("sleepTimeSeconds")
+
+        if secs:
+            sleep_string = sec_to_hms(secs)
 
     score = find_sleep_score(sleep)
+
     if score is not None:
         sleep_score = score
 
@@ -517,7 +577,11 @@ c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
 c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
 c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")
 c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")
-c5 = build_kpi_html("Sleep", f"{sleep_string}", f"Score: {sleep_score}")
+c5 = build_kpi_html(
+    "Sleep",
+    sleep_string,
+    f"Score: {sleep_score} • {sleep_date_used}"
+)
 c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")
 
 snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
