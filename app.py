@@ -1,7 +1,9 @@
-'"""
-Performance & Health Dashboard (Mobile-First Fixed 2x3 & 2x2 Grids)
-A compact, mobile-friendly Streamlit dashboard pulling live data 
-from Garmin Connect with clean inline HTML structure.
+"""
+Performance & Health Dashboard
+A Streamlit dashboard that pulls live data from Garmin Connect
+(via the garminconnect library) for a Garmin Forerunner 165 or any
+Garmin device: running / cycling / swimming activities plus
+general health metrics (HRV, sleep, training load, Body Battery).
 """
 
 import datetime as dt
