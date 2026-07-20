@@ -1,14 +1,14 @@
 """
 Performance & Health Dashboard
+------------------------------
 A Streamlit dashboard that pulls live data from Garmin Connect
-(via the garminconnect library) for a Garmin Forerunner 165 or any
-Garmin device: running / cycling / swimming activities plus
-general health metrics (HRV, sleep, training load, Body Battery).
+(via the garminconnect library) for Garmin wearables. Displays running,
+cycling, and swimming activities along with general health metrics (HRV,
+sleep, training load, Body Battery).
 """
 
 import datetime as dt
 from datetime import date, timedelta
-
 import pandas as pd
 import streamlit as st
 from garminconnect import (
@@ -19,13 +19,13 @@ from garminconnect import (
 )
 
 # --------------------------------------------------------------------------
-# PAGE CONFIG + MOBILE STYLE
+# PAGE CONFIG & MOBILE STYLING
 # --------------------------------------------------------------------------
 st.set_page_config(
     page_title="Garmin Dashboard",
     page_icon="📈",
-    layout="centered",  
-    initial_sidebar_state="collapsed",  
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
 ACCENT = "#2DD4BF"
@@ -39,7 +39,6 @@ html, body, [class*="css"] {{
     font-family: 'Inter', sans-serif;
 }}
 
-/* Adjusted to ensure title has breathing room and doesn't overlap */
 h1 {{
     font-family: 'Space Grotesk', sans-serif !important;
     font-size: 1.2rem !important; 
@@ -49,7 +48,6 @@ h1 {{
     white-space: normal !important;
 }}
 
-/* Added padding-top to shift everything down slightly from the browser header */
 .block-container {{
     padding-top: 2rem !important;
     padding-bottom: 2rem !important;
@@ -57,7 +55,6 @@ h1 {{
     padding-right: 0.6rem !important;
 }}
 
-/* Custom Fixed Grid Overrides for Mobile Viewports */
 .snapshot-grid {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -93,6 +90,7 @@ h1 {{
     overflow: hidden;
     text-overflow: ellipsis;
 }}
+
 .kpi-value {{
     font-family: 'Space Grotesk', sans-serif;
     font-size: 1.05rem;
@@ -101,6 +99,7 @@ h1 {{
     line-height: 1.1;
     margin: 2px 0;
 }}
+
 .kpi-sub {{
     color: {MUTED};
     font-size: 0.62rem;
@@ -127,6 +126,7 @@ h1 {{
     padding: 8px;
     box-sizing: border-box;
 }}
+
 .activity-date {{
     font-family: 'Space Grotesk', sans-serif;
     font-size: 0.7rem;
@@ -134,12 +134,14 @@ h1 {{
     font-weight: 600;
     margin-bottom: 2px;
 }}
+
 .activity-metrics {{
     display: flex;
     justify-content: space-between;
     font-size: 0.8rem;
     color: #E8ECF3;
 }}
+
 .activity-pace {{
     font-size: 0.65rem;
     color: {MUTED};
@@ -149,6 +151,7 @@ h1 {{
 .stTabs [data-baseweb="tab-list"] {{
     gap: 4px;
 }}
+
 .stTabs [data-baseweb="tab"] {{
     padding-left: 10px !important;
     padding-right: 10px !important;
@@ -160,14 +163,22 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# GARMIN CONNECTION & CACHING
+# GARMIN CONNECTION & API CLIENT CACHING
 # --------------------------------------------------------------------------
 @st.cache_resource(ttl=3600, show_spinner=False)
 def get_garmin_client():
+    """
+    Initializes and authenticates the Garmin Connect API client using Streamlit secrets.
+
+    Returns:
+        tuple: (Garmin client instance or None, error message string or None)
+    """
     email = st.secrets.get("GARMIN_EMAIL")
     password = st.secrets.get("GARMIN_PASSWORD")
+    
     if not email or not password:
         return None, "Missing GARMIN_EMAIL / GARMIN_PASSWORD in secrets."
+        
     try:
         client = Garmin(email, password)
         client.login()
@@ -184,11 +195,32 @@ def get_garmin_client():
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_activities(_client, start, limit):
+    """
+    Retrieves a list of user activities from Garmin Connect.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        start (int): Starting index for pagination.
+        limit (int): Maximum number of activities to retrieve.
+
+    Returns:
+        list[dict]: List of raw activity dictionary objects.
+    """
     return _client.get_activities(start, limit)
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_day_stats(_client, date_str):
+    """
+    Fetches daily summary statistics for a given date.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        date_str (str): Date string in 'YYYY-MM-DD' format.
+
+    Returns:
+        dict: Daily summary statistics dictionary.
+    """
     try:
         return _client.get_stats(date_str)
     except Exception:  # noqa: BLE001
@@ -197,6 +229,16 @@ def fetch_day_stats(_client, date_str):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_hrv(_client, date_str):
+    """
+    Fetches Heart Rate Variability (HRV) metrics for a given date.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        date_str (str): Date string in 'YYYY-MM-DD' format.
+
+    Returns:
+        dict or None: HRV metrics payload if available, else None.
+    """
     try:
         return _client.get_hrv_data(date_str)
     except Exception:  # noqa: BLE001
@@ -206,36 +248,43 @@ def fetch_hrv(_client, date_str):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_latest_sleep(_client):
     """
-    Searches backwards for the most recent sleep record.
+    Fetches sleep data strictly for last night (yesterday's calendar date).
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+
     Returns:
-        (date_string, sleep_json)
+        tuple: (date_string, sleep_json) if available, else (None, None).
     """
-
-    for i in range(30):
-
-        d = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
-
-        try:
-
-            sleep = _client.get_sleep_data(d)
-
-            if not sleep:
-                continue
-
-            dto = sleep.get("dailySleepDTO", {})
-
-            if dto.get("sleepTimeSeconds"):
-
-                return d, sleep
-
-        except Exception:
-            continue
+    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    try:
+        sleep = _client.get_sleep_data(yesterday)
+        if not sleep:
+            return None, None
+            
+        dto = sleep.get("dailySleepDTO", {})
+        if dto and dto.get("sleepTimeSeconds"):
+            return yesterday, sleep
+    except Exception:  # noqa: BLE001
+        pass
 
     return None, None
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_body_battery(_client, start_date, end_date):
+    """
+    Fetches Body Battery metrics across a date range.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        start_date (str): Range start date ('YYYY-MM-DD').
+        end_date (str): Range end date ('YYYY-MM-DD').
+
+    Returns:
+        list[dict]: List of daily Body Battery records.
+    """
     try:
         return _client.get_body_battery(start_date, end_date)
     except Exception:  # noqa: BLE001
@@ -244,6 +293,16 @@ def fetch_body_battery(_client, start_date, end_date):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_training_status(_client, date_str):
+    """
+    Fetches training status details for a given date.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        date_str (str): Date string in 'YYYY-MM-DD' format.
+
+    Returns:
+        dict: Training status payload if available, else empty dict.
+    """
     try:
         return _client.get_training_status(date_str) or {}
     except Exception:  # noqa: BLE001
@@ -252,6 +311,15 @@ def fetch_training_status(_client, date_str):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_user_profile(_client):
+    """
+    Fetches user profile details from Garmin Connect.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+
+    Returns:
+        dict: User profile data payload.
+    """
     try:
         return _client.get_user_profile() or {}
     except Exception:  # noqa: BLE001
@@ -260,6 +328,15 @@ def fetch_user_profile(_client):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_max_metrics_with_lookback(_client):
+    """
+    Performs a 30-day lookback search for maximal fitness metrics (e.g., VO2 Max).
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+
+    Returns:
+        dict: Max metrics data payload if found, else empty dict.
+    """
     for i in range(30):
         d = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
         try:
@@ -272,13 +349,31 @@ def fetch_max_metrics_with_lookback(_client):
 
 
 # --------------------------------------------------------------------------
-# HELPERS
+# PARSING & FORMATTING HELPERS
 # --------------------------------------------------------------------------
 def m_to_km(m):
+    """
+    Converts meters to kilometers rounded to two decimal places.
+
+    Args:
+        m (float/int): Distance in meters.
+
+    Returns:
+        float: Distance in kilometers.
+    """
     return round((m or 0) / 1000, 2)
 
 
 def sec_to_hms(seconds):
+    """
+    Converts a duration in seconds into an HMS string format (H:MM:SS or M:SS).
+
+    Args:
+        seconds (float/int): Duration in seconds.
+
+    Returns:
+        str: Formatted time string.
+    """
     seconds = int(seconds or 0)
     h, rem = divmod(seconds, 3600)
     mn, s = divmod(rem, 60)
@@ -286,6 +381,16 @@ def sec_to_hms(seconds):
 
 
 def pace_min_per_km(distance_m, duration_s):
+    """
+    Calculates running/swimming pace in minutes per kilometer.
+
+    Args:
+        distance_m (float/int): Distance in meters.
+        duration_s (float/int): Duration in seconds.
+
+    Returns:
+        str: Formatted pace string (e.g., '5:30/km') or '-' if invalid.
+    """
     if not distance_m:
         return "-"
     km = distance_m / 1000
@@ -297,11 +402,36 @@ def pace_min_per_km(distance_m, duration_s):
 
 
 def build_kpi_html(label, value, sub=""):
-    return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>'
+    """
+    Constructs an HTML card string for mobile-friendly KPI dashboard rendering.
+
+    Args:
+        label (str): Top metric header label.
+        value (str): Primary value text display.
+        sub (str): Subtext descriptor.
+
+    Returns:
+        str: Renderable HTML markup.
+    """
+    return (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'<div class="kpi-sub">{sub}</div>'
+        f'</div>'
+    )
 
 
 def find_vo2(obj):
-    """Recursively searches for any key/value match containing 'vo2'."""
+    """
+    Recursively inspects nested dictionaries/lists to find a VO2 Max value.
+
+    Args:
+        obj (dict | list): The target payload object to inspect.
+
+    Returns:
+        float/int/str or None: Extracted VO2 value if present, else None.
+    """
     if isinstance(obj, dict):
         for k, v in obj.items():
             if "vo2" in str(k).lower() and v and v != "-":
@@ -318,14 +448,18 @@ def find_vo2(obj):
     return None
 
 
-
 def find_sleep_score(obj):
     """
-    Searches recursively for the Garmin Sleep Score in nested dictionaries.
-    Handles 'sleepScores' -> 'overall' -> 'value' structure.
+    Recursively inspects nested structures to extract Garmin's Sleep Score.
+    Handles 'sleepScores' -> 'overall' -> 'value' as well as flat key formats.
+
+    Args:
+        obj (dict | list): Sleep payload structure.
+
+    Returns:
+        int or None: Extracted integer sleep score if found, else None.
     """
     if isinstance(obj, dict):
-        # Direct check for Garmin's common sleepScores -> overall -> value layout
         if "sleepScores" in obj and isinstance(obj["sleepScores"], dict):
             overall = obj["sleepScores"].get("overall")
             if isinstance(overall, dict) and "value" in overall:
@@ -333,7 +467,6 @@ def find_sleep_score(obj):
             if isinstance(overall, (int, float)):
                 return int(overall)
 
-        # Check for simple top-level keys
         if "sleepScore" in obj:
             val = obj["sleepScore"]
             if isinstance(val, (int, float)):
@@ -341,7 +474,6 @@ def find_sleep_score(obj):
             if isinstance(val, dict) and "overallScore" in val:
                 return val["overallScore"]
 
-        # Recurse through all keys
         for key, value in obj.items():
             if key in ("overallScore", "sleepScore"):
                 if isinstance(value, (int, float)):
@@ -360,6 +492,15 @@ def find_sleep_score(obj):
 
 
 def sport_tab(df, sport_key, start_of_week, end_of_week):
+    """
+    Renders the metric overview and logs within a specific activity tab.
+
+    Args:
+        df (pd.DataFrame): Processed activities dataframe.
+        sport_key (str): Filter key ('running', 'cycling', or 'swimming').
+        start_of_week (datetime.date): Start date boundary for current week calculations.
+        end_of_week (datetime.date): End date boundary for current week calculations.
+    """
     sport_df = df[df["sport"] == sport_key].copy()
     this_week_df = sport_df[(sport_df["date"] >= start_of_week) & (sport_df["date"] <= end_of_week)].copy()
     
@@ -386,7 +527,13 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         for _, row in sorted_week_df.iterrows():
             date_label = row["date"].strftime("%a, %b %d")
             pace_line = f'<div class="activity-pace">Pace: {row["pace"]}</div>' if row["pace"] != "-" else ""
-            logs_html += f'<div class="activity-card"><div class="activity-date">{date_label}</div><div class="activity-metrics"><strong>{row["distance_km"]:.2f} km</strong><span>{row["duration_hms"]}</span></div>{pace_line}</div>'
+            logs_html += (
+                f'<div class="activity-card">'
+                f'<div class="activity-date">{date_label}</div>'
+                f'<div class="activity-metrics"><strong>{row["distance_km"]:.2f} km</strong><span>{row["duration_hms"]}</span></div>'
+                f'{pace_line}'
+                f'</div>'
+            )
         logs_html += "</div>"
         st.markdown(logs_html, unsafe_allow_html=True)
     else:
@@ -394,7 +541,7 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
 
 
 # --------------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR CONTROLS
 # --------------------------------------------------------------------------
 st.sidebar.markdown("### Settings")
 days_back = st.sidebar.slider("History Window (days)", 7, 90, 28)
@@ -404,7 +551,7 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
 
 
 # --------------------------------------------------------------------------
-# CONNECT & DATA RETRIEVAL
+# DATA RETRIEVAL & PROCESSING PIPELINE
 # --------------------------------------------------------------------------
 client, error = get_garmin_client()
 if error:
@@ -431,7 +578,7 @@ max_metrics = fetch_max_metrics_with_lookback(client)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 raw_activities = fetch_activities(client, 0, 50)
 
-# Parse historical activities
+# Parse historical activities list
 records = []
 for a in raw_activities:
     a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
@@ -469,7 +616,7 @@ df = pd.DataFrame(records)
 
 
 # --------------------------------------------------------------------------
-# THE RECURSIVE DEEP INSPECTION LAYER
+# DEEP INSPECTION & METRIC RESOLUTION
 # --------------------------------------------------------------------------
 vo2_max_val = "-"
 status_label = "Active"
@@ -491,14 +638,14 @@ if not found_vo2_target and not df.empty:
     if not valid_activity_vo2.empty:
         found_vo2_target = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["vo2"]
 
-# Convert and cast final data safely
+# Convert and cast final VO2 data safely
 if found_vo2_target is not None:
     try:
         vo2_max_val = int(round(float(found_vo2_target)))
     except Exception:  # noqa: BLE001
         pass
 
-# Resilient Training Status text formatting
+# Format Training Status label
 if isinstance(training_status, dict) and training_status:
     recent_status = training_status.get("mostRecentTrainingStatus", {})
     if isinstance(recent_status, dict):
@@ -510,7 +657,7 @@ else:
 
 status_label = str(status_label).replace("_", " ").title()
 
-# Parse remaining daily vital stats safely
+# Parse daily vital statistics safely
 rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
 hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, dict) else "-"
 
@@ -519,29 +666,17 @@ sleep_score = "-"
 sleep_date_used = "-"
 
 if sleep:
-
     sleep_date_used = sleep_date
     dto = sleep.get("dailySleepDTO", {})
 
     if isinstance(dto, dict):
-
         secs = dto.get("sleepTimeSeconds")
-
         if secs:
             sleep_string = sec_to_hms(secs)
 
     score = find_sleep_score(sleep)
-
     if score is not None:
         sleep_score = score
-
-with st.expander("Sleep Debug", expanded=True):
-
-    st.write("Sleep record date:", sleep_date_used)
-
-    st.write("Sleep score found:", sleep_score)
-
-    st.json(sleep)
 
 bb_val = "-"
 if body_battery_raw and isinstance(body_battery_raw, list):
@@ -562,12 +697,12 @@ if isinstance(training_status, dict):
 
 
 # --------------------------------------------------------------------------
-# MAIN DASHBOARD INTERFACE
+# MAIN DASHBOARD UI LAYOUT
 # --------------------------------------------------------------------------
 st.title("Performance & Health Dashboard")
 st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
 
-# Render Mobile-Safe 2x3 Grid Container
+# Snapshot Metrics Grid
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
 c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
@@ -577,14 +712,14 @@ c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")
 c5 = build_kpi_html(
     "Sleep",
     sleep_string,
-    f"Score: {sleep_score} • {sleep_date_used}"
+    f"Score: {sleep_score} • {sleep_date_used}" if sleep_date_used != "-" else "No Data"
 )
 c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")
 
 snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
 
-# Render Activity Progress Sections
+# Sport Tabs & Progress Section
 st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
 
 if df.empty:
