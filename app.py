@@ -1,4 +1,6 @@
-"""
+Everything is working great with this version of the code: 
+
+'"""
 Performance & Health Dashboard (Mobile-First Fixed 2x3 & 2x2 Grids)
 A compact, mobile-friendly Streamlit dashboard pulling live data 
 from Garmin Connect with clean inline HTML structure.
@@ -293,6 +295,26 @@ def find_vo2(obj):
     return None
 
 
+
+def find_sleep_score(obj):
+    """Recursively searches any Garmin response for a sleep score."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            kl=str(key).lower()
+            if kl in ("sleepscore","overallscore","score"):
+                if isinstance(value,(int,float)) and 0 <= value <= 100:
+                    return int(value)
+            result=find_sleep_score(value)
+            if result is not None:
+                return result
+    elif isinstance(obj,list):
+        for item in obj:
+            result=find_sleep_score(item)
+            if result is not None:
+                return result
+    return None
+
+
 def sport_tab(df, sport_key, start_of_week, end_of_week):
     sport_df = df[df["sport"] == sport_key].copy()
     this_week_df = sport_df[(sport_df["date"] >= start_of_week) & (sport_df["date"] <= end_of_week)].copy()
@@ -454,9 +476,15 @@ if isinstance(sleep, dict):
     dto = sleep.get("dailySleepDTO", {})
     if isinstance(dto, dict):
         sleep_secs = dto.get("sleepTimeSeconds")
-        sleep_score = dto.get("sleepScore", "-")
         if sleep_secs:
             sleep_string = sec_to_hms(sleep_secs)
+
+    score = find_sleep_score(sleep)
+    if score is not None:
+        sleep_score = score
+
+with st.expander("Sleep Debug", expanded=False):
+    st.json(sleep)
 
 bb_val = "-"
 if body_battery_raw and isinstance(body_battery_raw, list):
@@ -509,4 +537,6 @@ else:
     with tab_swim:
         sport_tab(df, "swimming", start_of_week, end_of_week)
 
-st.divider()
+st.divider()'
+
+However... I am able to pull in sleep data like the amount of sleep I got in terms of time but it won't show the sleep score data... i am not sure if the sleep score is being retrieved correctly ot just not shown correctly to the. dashboard
