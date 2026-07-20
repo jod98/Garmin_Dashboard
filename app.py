@@ -128,13 +128,16 @@ def get_garmin_client():
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_activities(_client, start, limit):
-    return _client.get_activities(start, limit)
+    try:
+        return _client.get_activities(start, limit) or []
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_day_stats(_client, date_str):
     try:
-        return _client.get_stats(date_str)
+        return _client.get_stats(date_str) or {}
     except Exception:  # noqa: BLE001
         return {}
 
@@ -142,23 +145,29 @@ def fetch_day_stats(_client, date_str):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_hrv(_client, date_str):
     try:
-        return _client.get_hrv_data(date_str)
+        return _client.get_hrv_data(date_str) or {}
     except Exception:  # noqa: BLE001
-        return None
+        return {}
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_sleep(_client, date_str):
-    try:
-        return _client.get_sleep_data(date_str)
-    except Exception:  # noqa: BLE001
-        return None
+def fetch_last_available_sleep(_client):
+    """Iterates back 7 days to find the latest recorded sleep entry."""
+    for i in range(7):
+        date_str = (dt.date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            data = _client.get_sleep_data(date_str)
+            if data and isinstance(data, dict) and data.get("dailySleepDTO"):
+                return data
+        except Exception:
+            continue
+    return {}
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_body_battery(_client, start_date, end_date):
     try:
-        return _client.get_body_battery(start_date, end_date)
+        return _client.get_body_battery(start_date, end_date) or []
     except Exception:  # noqa: BLE001
         return []
 
@@ -166,18 +175,18 @@ def fetch_body_battery(_client, start_date, end_date):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_training_status(_client, date_str):
     try:
-        return _client.get_training_status(date_str)
+        return _client.get_training_status(date_str) or {}
     except Exception:  # noqa: BLE001
-        return None
+        return {}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_activity_hr_series(_client, activity_id):
     try:
-        details = _client.get_activity_details(activity_id)
-        metrics = details.get("activityDetailMetrics", [])
+        details = _client.get_activity_details(activity_id) or {}
+        metrics = details.get("activityDetailMetrics") or []
         descriptors = {
-            d["key"]: i for i, d in enumerate(details.get("metricDescriptors", []))
+            d["key"]: i for i, d in enumerate(details.get("metricDescriptors") or []) if isinstance(d, dict) and "key" in d
         }
         hr_idx = descriptors.get("directHeartRate")
         time_idx = descriptors.get("sumDuration")
@@ -185,13 +194,16 @@ def fetch_activity_hr_series(_client, activity_id):
             return pd.DataFrame()
         rows = []
         for m in metrics:
-            vals = m.get("metrics", [])
-            rows.append(
-                {
-                    "seconds": vals[time_idx] if time_idx is not None else None,
-                    "heart_rate": vals[hr_idx],
-                }
-            )
+            if not isinstance(m, dict):
+                continue
+            vals = m.get("metrics") or []
+            if len(vals) > hr_idx and vals[hr_idx] is not None:
+                rows.append(
+                    {
+                        "seconds": vals[time_idx] if time_idx is not None and len(vals) > time_idx else None,
+                        "heart_rate": vals[hr_idx],
+                    }
+                )
         return pd.DataFrame(rows)
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
@@ -200,11 +212,31 @@ def fetch_activity_hr_series(_client, activity_id):
 # --------------------------------------------------------------------------
 # HELPERS
 # --------------------------------------------------------------------------
+def find_sleep_score(obj):
+    """Recursively search for sleep score across nested Garmin dictionary response."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if str(key).lower() in ("sleepscore", "overallscore", "score"):
+                if isinstance(value, (int, float)) and 0 <= value <= 100:
+                    return int(value)
+            res = find_sleep_score(value)
+            if res is not None:
+                return res
+    elif isinstance(obj, list):
+        for item in obj:
+            res = find_sleep_score(item)
+            if res is not None:
+                return res
+    return None
+
+
 def m_to_km(m):
     return round((m or 0) / 1000, 2)
 
 
 def sec_to_hms(seconds):
+    if not seconds or seconds == "-":
+        return "-"
     seconds = int(seconds or 0)
     h, rem = divmod(seconds, 3600)
     mn, s = divmod(rem, 60)
@@ -346,7 +378,9 @@ start_date = today - timedelta(days=days_back)
 raw_activities = fetch_activities(client, 0, 200)
 records = []
 for a in raw_activities:
-    a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
+    if not isinstance(a, dict):
+        continue
+    a_type = ((a.get("activityType") or {}).get("typeKey", ""))
     if any(k in a_type for k in ["running", "run"]):
         sport = "running"
     elif any(k in a_type for k in ["cycling", "biking", "bike"]):
@@ -359,7 +393,7 @@ for a in raw_activities:
     start_str = a.get("startTimeLocal", "")
     try:
         a_date = dt.datetime.strptime(start_str[:10], "%Y-%m-%d").date()
-    except ValueError:
+    except (ValueError, TypeError):
         continue
     if a_date < start_date:
         continue
@@ -389,7 +423,7 @@ df = pd.DataFrame(records)
 today_str = today.strftime("%Y-%m-%d")
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
-sleep = fetch_sleep(client, today_str)
+sleep = fetch_last_available_sleep(client)
 training_status = fetch_training_status(client, today_str)
 body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
 
@@ -399,26 +433,32 @@ st.caption(f"Last synced {dt.datetime.now().strftime('%d %b %Y, %H:%M')} · wind
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1:
-    rhr = stats.get("restingHeartRate", "-")
-    kpi_card("Resting HR", f"{rhr} bpm" if rhr != "-" else "-")
+    rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
+    kpi_card("Resting HR", f"{rhr} bpm" if rhr and rhr != "-" else "-")
 with c2:
     hrv_val = "-"
     if isinstance(hrv, dict):
-        hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-")
-    kpi_card("HRV (overnight avg)", f"{hrv_val} ms" if hrv_val != "-" else "-")
+        hrv_val = (hrv.get("hrvSummary") or {}).get("lastNightAvg", "-")
+    kpi_card("HRV (overnight avg)", f"{hrv_val} ms" if hrv_val and hrv_val != "-" else "-")
 with c3:
     sleep_secs = "-"
+    sleep_score = "-"
     if isinstance(sleep, dict):
-        sleep_secs = sleep.get("dailySleepDTO", {}).get("sleepTimeSeconds")
-    kpi_card("Sleep", sec_to_hms(sleep_secs) if sleep_secs and sleep_secs != "-" else "-")
+        dto = sleep.get("dailySleepDTO") or {}
+        sleep_secs = dto.get("sleepTimeSeconds", "-")
+        sleep_score = find_sleep_score(sleep) or "-"
+    
+    sub_text = f"Score: {sleep_score}" if sleep_score != "-" else ""
+    kpi_card("Sleep", sec_to_hms(sleep_secs), sub_text)
 with c4:
     bb_val = "-"
-    if body_battery_raw:
+    if body_battery_raw and isinstance(body_battery_raw, list):
         try:
             last_reading = body_battery_raw[-1]
-            levels = last_reading.get("bodyBatteryValuesArray", [])
-            if levels:
-                bb_val = levels[-1][1]
+            if isinstance(last_reading, dict):
+                levels = last_reading.get("bodyBatteryValuesArray") or []
+                if levels:
+                    bb_val = levels[-1][1]
         except Exception:  # noqa: BLE001
             pass
     kpi_card("Body Battery", f"{bb_val}" if bb_val != "-" else "-")
@@ -426,11 +466,11 @@ with c5:
     load_val = "-"
     if isinstance(training_status, dict):
         load_val = (
-            training_status.get("mostRecentTrainingLoadBalance", {})
-            .get("metricsTrainingStatus", {})
+            ((training_status.get("mostRecentTrainingLoadBalance") or {})
+            .get("metricsTrainingStatus") or {})
             .get("trainingLoad", "-")
         )
-    kpi_card("Training Load", f"{load_val}" if load_val != "-" else "-")
+    kpi_card("Training Load", f"{load_val}" if load_val and load_val != "-" else "-")
 
 # --------------------------------------------------------------------------
 # WINDOW SUMMARY (all sports combined)
@@ -483,9 +523,12 @@ with tab_swim:
 with tab_health:
     st.markdown('<div class="section-title">Body Battery (7 days)</div>', unsafe_allow_html=True)
     bb_rows = []
-    for day in body_battery_raw or []:
-        for point in day.get("bodyBatteryValuesArray", []):
-            bb_rows.append({"timestamp": point[0], "level": point[1]})
+    if isinstance(body_battery_raw, list):
+        for day in body_battery_raw:
+            if isinstance(day, dict):
+                for point in (day.get("bodyBatteryValuesArray") or []):
+                    if isinstance(point, (list, tuple)) and len(point) >= 2:
+                        bb_rows.append({"timestamp": point[0], "level": point[1]})
     if bb_rows:
         bb_df = pd.DataFrame(bb_rows)
         bb_df["timestamp"] = pd.to_datetime(bb_df["timestamp"], unit="ms", errors="coerce")
@@ -509,7 +552,7 @@ with tab_health:
     with s1:
         deep = light = rem = "-"
         if isinstance(sleep, dict):
-            dto = sleep.get("dailySleepDTO", {})
+            dto = sleep.get("dailySleepDTO") or {}
             deep = sec_to_hms(dto.get("deepSleepSeconds"))
             light = sec_to_hms(dto.get("lightSleepSeconds"))
             rem = sec_to_hms(dto.get("remSleepSeconds"))
@@ -522,8 +565,8 @@ with tab_health:
     st.markdown('<div class="section-title">Training Status</div>', unsafe_allow_html=True)
     if isinstance(training_status, dict):
         status_label = (
-            training_status.get("mostRecentTrainingStatus", {})
-            .get("latestTrainingStatusData", {})
+            ((training_status.get("mostRecentTrainingStatus") or {})
+            .get("latestTrainingStatusData") or {})
             .get("trainingStatus", "Unknown")
         )
         st.write(f"Current status: **{status_label}**")
