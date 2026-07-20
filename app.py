@@ -538,5 +538,3 @@ else:
         sport_tab(df, "swimming", start_of_week, end_of_week)
 
 st.divider()'
-
-However... I am able to pull in sleep data like the amount of sleep I got in terms of time but it won't show the sleep score data... i am not sure if the sleep score is being retrieved correctly ot just not shown correctly to the. dashboard
