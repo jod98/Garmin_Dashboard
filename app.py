@@ -321,47 +321,40 @@ def find_vo2(obj):
 
 def find_sleep_score(obj):
     """
-    Searches specifically for Garmin Sleep Score.
+    Searches recursively for the Garmin Sleep Score in nested dictionaries.
+    Handles 'sleepScores' -> 'overall' -> 'value' structure.
     """
-
     if isinstance(obj, dict):
+        # Direct check for Garmin's common sleepScores -> overall -> value layout
+        if "sleepScores" in obj and isinstance(obj["sleepScores"], dict):
+            overall = obj["sleepScores"].get("overall")
+            if isinstance(overall, dict) and "value" in overall:
+                return overall["value"]
+            if isinstance(overall, (int, float)):
+                return int(overall)
 
-        # Garmin sometimes returns this
+        # Check for simple top-level keys
         if "sleepScore" in obj:
+            val = obj["sleepScore"]
+            if isinstance(val, (int, float)):
+                return int(val)
+            if isinstance(val, dict) and "overallScore" in val:
+                return val["overallScore"]
 
-            value = obj["sleepScore"]
-
-            if isinstance(value, (int, float)):
-                return int(value)
-
-            if isinstance(value, dict):
-                if "overallScore" in value:
-                    return value["overallScore"]
-
-        # Garmin sometimes returns this
-        if "sleepScores" in obj:
-
-            scores = obj["sleepScores"]
-
-            if isinstance(scores, dict):
-                if "overallScore" in scores:
-                    return scores["overallScore"]
-
-        for value in obj.values():
-
-            result = find_sleep_score(value)
-
-            if result is not None:
-                return result
+        # Recurse through all keys
+        for key, value in obj.items():
+            if key in ("overallScore", "sleepScore"):
+                if isinstance(value, (int, float)):
+                    return int(value)
+            res = find_sleep_score(value)
+            if res is not None:
+                return res
 
     elif isinstance(obj, list):
-
         for item in obj:
-
-            result = find_sleep_score(item)
-
-            if result is not None:
-                return result
+            res = find_sleep_score(item)
+            if res is not None:
+                return res
 
     return None
 
