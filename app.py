@@ -404,24 +404,29 @@ def fetch_max_metrics_with_lookback(_client):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches scheduled running workouts directly from Garmin Connect's calendar.
+    Fetches scheduled running workouts directly from Garmin Connect's calendar
+    using direct connectapi calls.
     """
     months_to_fetch = {(start_date.year, start_date.month), (end_date.year, end_date.month)}
     items = []
 
     for yr, mo in months_to_fetch:
         try:
-            # Pass formatted string parameters if required by your API wrapper version
-            cal_data = _client.get_calendar(yr, mo)
+            # Garmin's calendar service endpoint uses 0-indexed months (0 = Jan, 6 = Jul)
+            month_index = mo - 1
+            endpoint = f"/calendar-service/year/{yr}/month/{month_index}"
+            
+            cal_data = _client.connectapi(endpoint)
+            
             if isinstance(cal_data, dict):
                 month_items = cal_data.get("calendarItems", []) or cal_data.get("items", [])
             elif isinstance(cal_data, list):
                 month_items = cal_data
             else:
                 month_items = []
+                
             items.extend(month_items)
         except Exception as e:
-            # Print/log the exception to st.error/st.write while debugging
             st.warning(f"Garmin Calendar Fetch Warning ({yr}-{mo}): {e}")
             continue
 
