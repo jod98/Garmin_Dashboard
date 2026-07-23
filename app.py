@@ -405,17 +405,15 @@ def fetch_max_metrics_with_lookback(_client):
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
     Fetches scheduled running workouts directly from Garmin Connect's calendar
-    using direct connectapi calls.
+    and extracts completion status.
     """
     months_to_fetch = {(start_date.year, start_date.month), (end_date.year, end_date.month)}
     items = []
 
     for yr, mo in months_to_fetch:
         try:
-            # Garmin's calendar service endpoint uses 0-indexed months (0 = Jan, 6 = Jul)
             month_index = mo - 1
             endpoint = f"/calendar-service/year/{yr}/month/{month_index}"
-            
             cal_data = _client.connectapi(endpoint)
             
             if isinstance(cal_data, dict):
@@ -430,32 +428,17 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             st.warning(f"Garmin Calendar Fetch Warning ({yr}-{mo}): {e}")
             continue
 
-    # Map workout ID to estimated duration
-    duration_by_workout_id = {}
-    try:
-        workouts = _client.get_workouts() or []
-        for w in workouts:
-            if isinstance(w, dict):
-                w_id = w.get("workoutId") or w.get("id")
-                est_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds")
-                if w_id and est_sec:
-                    duration_by_workout_id[str(w_id)] = round(est_sec / 60)
-    except Exception as e:
-        st.warning(f"Garmin Workouts Fetch Warning: {e}")
-
     sessions = []
     for item in items:
         if not isinstance(item, dict):
             continue
 
-        # Flexible itemType / eventType checking
         item_type = str(item.get("itemType") or item.get("eventType") or "").lower()
         is_workout = "workout" in item_type or item.get("workoutScheduleId") is not None
 
         if not is_workout:
             continue
 
-        # Flexible date extraction
         date_str = (
             item.get("calendarDate")
             or item.get("date")
@@ -472,15 +455,6 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
         if not (start_date <= item_date <= end_date):
             continue
 
-        # Flexible workout ID extraction
-        workout_id = str(
-            item.get("workoutId")
-            or item.get("itemPk")
-            or item.get("workoutScheduleId")
-            or item.get("id")
-            or ""
-        )
-
         title = (
             item.get("title")
             or item.get("workoutName")
@@ -488,10 +462,18 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             or "Scheduled Run"
         )
 
+        # Garmin flags indicating completion
+        is_completed = (
+            bool(item.get("completed"))
+            or bool(item.get("isCompleted"))
+            or str(item.get("completionStatus", "")).upper() == "COMPLETED"
+            or item.get("activityId") is not None
+        )
+
         sessions.append({
             "date": item_date,
             "title": title,
-            "duration_min": duration_by_workout_id.get(workout_id),
+            "is_completed": is_completed,
         })
 
     sessions.sort(key=lambda s: s["date"])
@@ -770,27 +752,40 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-def render_planned_sessions(sessions):
+def render_planned_sessions(sessions, completed_dates=None):
     """
-    Renders this week's planned running sessions (already fetched and
-    week-filtered by fetch_planned_sessions_live) as activity-style cards,
-    matching the look of "This Week: Progress".
-
-    Args:
-        sessions (list[dict]): Each with "date", "title", "duration_min".
+    Renders this week's planned running sessions with status symbols:
+    - Green Tick (✓) for completed workouts
+    - Red Cross (✗) for missed past workouts
+    - Hourglass (⏳) for upcoming workouts
     """
     if not sessions:
         st.caption("No running sessions planned this calendar week.")
         return
 
+    today = dt.date.today()
+    completed_set = completed_dates or set()
+
     logs_html = '<div class="activity-totals-grid">'
     for s in sessions:
         date_label = s["date"].strftime("%a, %b %d")
-        duration_span = f'<span>{s["duration_min"]} min</span>' if s.get("duration_min") else ""
+        
+        # Checked via Garmin calendar flag OR matching recorded activity date
+        is_done = s.get("is_completed") or (s["date"] in completed_set)
+
+        if is_done:
+            status_icon = '<span style="color: #22c55e; font-size: 1.1rem; font-weight: bold;">✓</span>'
+        elif s["date"] < today:
+            # Past date and not completed
+            status_icon = '<span style="color: #ef4444; font-size: 1.1rem; font-weight: bold;">✗</span>'
+        else:
+            # Scheduled for today/future
+            status_icon = '<span style="color: #8792A6; font-size: 0.9rem;">⏳</span>'
+
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
-            f'<div class="activity-metrics"><strong>{s["title"]}</strong>{duration_span}</div>'
+            f'<div class="activity-metrics"><strong>{s["title"]}</strong>{status_icon}</div>'
             f'</div>'
         )
     logs_html += "</div>"
@@ -986,11 +981,15 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-    # Planned Sessions Section (Direct from Garmin Connect API)
+    # Planned Sessions Section
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
     planned_sessions = fetch_planned_sessions_live(client, start_of_week, end_of_week)
-    render_planned_sessions(planned_sessions)
+    
+    # Extract dates of recorded activities to cross-verify completion
+    completed_dates = set(df["date"]) if not df.empty else set()
+    
+    render_planned_sessions(planned_sessions, completed_dates=completed_dates)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
