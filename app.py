@@ -430,6 +430,7 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
     for yr, mo in months_to_fetch:
         try:
             cal_data = _client.get_calendar(yr, mo)
+            st.write(cal_data)
         except Exception:  # noqa: BLE001
             continue
         month_items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
