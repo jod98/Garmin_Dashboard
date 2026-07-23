@@ -15,6 +15,7 @@ import datetime as dt
 from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
+import garmin_client
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
@@ -418,6 +419,12 @@ def fetch_calendar_workouts(_client, year: int, month: int):
     except Exception:  # noqa: BLE001
         return []   
 
+@st.cache_data(ttl=900, show_spinner=False)
+def get_live_planned_sessions(_client, start_date, end_date):
+    """
+    Cached Streamlit wrapper calling garmin_client to pull planned sessions.
+    """
+    return garmin_client.fetch_planned_sessions(_client, start_date, end_date)
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
@@ -943,17 +950,33 @@ def main_page():
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
     # Planned Sessions Section (Direct from Garmin Connect Calendar)
-    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
+=    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    # Pass the year and month as integers
-    calendar_items = fetch_calendar_workouts(client, start_of_week.year, start_of_week.month)
+    planned_sessions = get_live_planned_sessions(client, start_of_week, end_of_week)
 
-    # If the week spans across month boundaries, also fetch next month's items
-    if start_of_week.month != end_of_week.month:
-        next_month_items = fetch_calendar_workouts(client, end_of_week.year, end_of_week.month)
-        calendar_items = calendar_items + next_month_items
+    if not planned_sessions:
+        st.caption("No running sessions planned this calendar week.")
+    else:
+        planned_sessions.sort(key=lambda s: s["date"])
+        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
+        
+        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
+        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
-    render_planned_sessions(calendar_items, start_of_week, end_of_week)
+        logs_html = '<div class="activity-totals-grid">'
+        for s in planned_sessions:
+            date_label = s["date"].strftime("%a, %b %d")
+            title = s["title"]
+            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
+            logs_html += (
+                f'<div class="activity-card">'
+                f'<div class="activity-date">{date_label}</div>'
+                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
+                f'</div>'
+            )
+        logs_html += "</div>"
+        st.markdown(logs_html, unsafe_allow_html=True)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
