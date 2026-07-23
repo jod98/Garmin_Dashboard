@@ -1036,7 +1036,7 @@ def main_page():
             logs_html += (
                 f'<div class="activity-card">'
                 f'<div class="activity-date">{date_label}</div>'
-                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
+                f'<div class="activity-metrics"><strong>{title}</strong></div>'
                 f'</div>'
             )
         logs_html += "</div>"
