@@ -404,56 +404,61 @@ def fetch_max_metrics_with_lookback(_client):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches this week's scheduled running workouts directly from Garmin
-    Connect's calendar (populated by core.garmin_client.push_workout, which
-    schedules each generated workout onto a specific date via
-    client.schedule_workout).
-
-    Only calendar entries of itemType "workout" within [start_date, end_date]
-    are included - these are exactly the structured workouts this app
-    schedules (the AI coach only ever pushes running sessions), so no extra
-    sport-name matching is needed, and nothing falls back to "today" if a
-    date can't be read - it's just skipped.
-
-    Args:
-        _client (Garmin): Authenticated Garmin API client.
-        start_date (datetime.date): Monday of the week to look up.
-        end_date (datetime.date): Sunday of the week to look up.
-
-    Returns:
-        list[dict]: Each with "date" (datetime.date), "title" (str), and
-            "duration_min" (int or None), sorted by date.
+    Fetches scheduled running workouts directly from Garmin Connect's calendar.
     """
-    # Pull whichever calendar month(s) the requested week spans.
     months_to_fetch = {(start_date.year, start_date.month), (end_date.year, end_date.month)}
     items = []
+
     for yr, mo in months_to_fetch:
         try:
+            # Pass formatted string parameters if required by your API wrapper version
             cal_data = _client.get_calendar(yr, mo)
-            st.write(cal_data)
-        except Exception:  # noqa: BLE001
+            if isinstance(cal_data, dict):
+                month_items = cal_data.get("calendarItems", []) or cal_data.get("items", [])
+            elif isinstance(cal_data, list):
+                month_items = cal_data
+            else:
+                month_items = []
+            items.extend(month_items)
+        except Exception as e:
+            # Print/log the exception to st.error/st.write while debugging
+            st.warning(f"Garmin Calendar Fetch Warning ({yr}-{mo}): {e}")
             continue
-        month_items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
-        items.extend(month_items)
 
-    # Look up each scheduled workout's planned duration (in minutes) from the
-    # workout library, keyed by workout id.
+    # Map workout ID to estimated duration
     duration_by_workout_id = {}
     try:
-        for w in (_client.get_workouts() or []):
-            if isinstance(w, dict) and w.get("workoutId") is not None and w.get("estimatedDurationInSecs"):
-                duration_by_workout_id[w["workoutId"]] = round(w["estimatedDurationInSecs"] / 60)
-    except Exception:  # noqa: BLE001
-        pass
+        workouts = _client.get_workouts() or []
+        for w in workouts:
+            if isinstance(w, dict):
+                w_id = w.get("workoutId") or w.get("id")
+                est_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds")
+                if w_id and est_sec:
+                    duration_by_workout_id[str(w_id)] = round(est_sec / 60)
+    except Exception as e:
+        st.warning(f"Garmin Workouts Fetch Warning: {e}")
 
     sessions = []
     for item in items:
-        if not isinstance(item, dict) or str(item.get("itemType", "")).lower() != "workout":
+        if not isinstance(item, dict):
             continue
 
-        date_str = item.get("date") or (item.get("startDateLocal") or item.get("startTimeLocal") or "")[:10]
+        # Flexible itemType / eventType checking
+        item_type = str(item.get("itemType") or item.get("eventType") or "").lower()
+        is_workout = "workout" in item_type or item.get("workoutScheduleId") is not None
+
+        if not is_workout:
+            continue
+
+        # Flexible date extraction
+        date_str = (
+            item.get("calendarDate")
+            or item.get("date")
+            or (item.get("startDateLocal") or item.get("startTimeLocal") or "")[:10]
+        )
         if not date_str:
             continue
+
         try:
             item_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
@@ -462,10 +467,25 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
         if not (start_date <= item_date <= end_date):
             continue
 
-        workout_id = item.get("workoutId") or item.get("id")
+        # Flexible workout ID extraction
+        workout_id = str(
+            item.get("workoutId")
+            or item.get("itemPk")
+            or item.get("workoutScheduleId")
+            or item.get("id")
+            or ""
+        )
+
+        title = (
+            item.get("title")
+            or item.get("workoutName")
+            or item.get("name")
+            or "Scheduled Run"
+        )
+
         sessions.append({
             "date": item_date,
-            "title": item.get("title") or item.get("workoutName") or "Scheduled Run",
+            "title": title,
             "duration_min": duration_by_workout_id.get(workout_id),
         })
 
