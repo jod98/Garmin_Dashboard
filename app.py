@@ -430,22 +430,22 @@ def sec_to_hms(seconds):
     return f"{h}:{mn:02d}:{s:02d}" if h else f"{mn}:{s:02d}"
 
 
-def sec_to_hrs_mins(seconds):
+def sec_to_hr_min(seconds):
     """
-    Converts a duration in seconds into a 'Xhrs Ymins' style string.
-    Used for the sleep average, where this reads more naturally than the
-    H:MM:SS clock format used elsewhere.
+    Converts a duration in seconds into an 'Xhr Ymin' style string (no
+    trailing 's'). Used for sleep duration/average display, where this
+    reads more compactly than the H:MM:SS clock format used elsewhere.
 
     Args:
         seconds (float/int): Duration in seconds.
 
     Returns:
-        str: Formatted string, e.g. "7hrs 15mins".
+        str: Formatted string, e.g. "7hr 15min".
     """
     seconds = int(seconds or 0)
     h, rem = divmod(seconds, 3600)
     mn = rem // 60
-    return f"{h}hrs {mn}mins"
+    return f"{h}hr {mn}min"
 
 
 def pace_min_per_km(distance_m, duration_s):
@@ -816,13 +816,13 @@ if sleep:
     if isinstance(dto, dict):
         secs = dto.get("sleepTimeSeconds")
         if secs:
-            sleep_string = sec_to_hms(secs)
+            sleep_string = sec_to_hr_min(secs)
 
     score = find_sleep_score(sleep)
     if score is not None:
         sleep_score = score
 
-avg_sleep_str = sec_to_hrs_mins(sum(sleep_history) / len(sleep_history)) if sleep_history else "-"
+avg_sleep_str = sec_to_hr_min(sum(sleep_history) / len(sleep_history)) if sleep_history else "-"
 
 bb_val = "-"
 if body_battery_raw and isinstance(body_battery_raw, list):
@@ -852,12 +852,17 @@ c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
 c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
 c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", hrv_note)
 c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_note)
-c5 = build_kpi_html(
-    "Sleep",
-    sleep_string,
-    f"Score: {sleep_score} • 7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
+sleep_value_display = (
+    f"{sleep_string} - - - Score: {sleep_score}" if sleep_date_used != "-" else "-"
 )
-c6 = build_kpi_html("Steps", f"{steps_val:,}" if isinstance(steps_val, (int, float)) else "-", "")
+sleep_sub_display = f"7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
+
+c5 = build_kpi_html("Sleep", sleep_value_display, sleep_sub_display)
+c6 = build_kpi_html(
+    "Steps",
+    f"{steps_val:,}" if isinstance(steps_val, (int, float)) else "-",
+    "Target: 7,500-10,000"
+)
 
 snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
