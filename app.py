@@ -422,24 +422,26 @@ def fetch_calendar_workouts(_client, year: int, month: int):
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
     Fetches planned running sessions directly from Garmin Connect.
-    First checks scheduled calendar entries for the current week, 
-    and falls back to checking unscheduled workouts in the library.
+    Queries scheduled calendar entries for the week and checks the workout library.
     """
     sessions = []
 
-    # 1. Fetch Calendar Items from Garmin Connect
+    # ------------------------------------------------------------------
+    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Primary)
+    # ------------------------------------------------------------------
     try:
-        # get_calendar takes integer parameters: (year, month)
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
-        # If week crosses month boundary, query next month as well
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
             items.extend(next_items)
 
         for item in items:
+            if not isinstance(item, dict):
+                continue
+
             date_str = item.get("date") or item.get("startDateLocal", "")[:10]
             if not date_str:
                 continue
@@ -460,23 +462,43 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
     except Exception:  # noqa: BLE001
         pass
 
-    # 2. Fallback: If no calendar entries found, check Garmin Workout Library
-    if not sessions:
-        try:
-            workouts = _client.get_workouts() or []
-            for w in workouts:
-                sport = str(w.get("sportType", {}).get("sportTypeKey") or "").lower()
-                if "run" in sport or sport == "running":
-                    est_dur = w.get("estimatedDurationInSecs") or 0
-                    sessions.append({
-                        "title": w.get("workoutName", "Garmin Workout"),
-                        "date": date.today(),
-                        "duration_min": round(est_dur / 60) if est_dur else None,
-                    })
-        except Exception:  # noqa: BLE001
-            pass
+    # ------------------------------------------------------------------
+    # 2. Check Garmin Workout Library (Custom & Unscheduled Workouts)
+    # ------------------------------------------------------------------
+    try:
+        workouts = _client.get_workouts() or []
+        for w in workouts:
+            if not isinstance(w, dict):
+                continue
+            
+            # Robust extraction of sport key from various Garmin JSON schemas
+            sport_obj = w.get("sportType") or {}
+            sport_key = ""
+            if isinstance(sport_obj, dict):
+                sport_key = sport_obj.get("sportTypeKey") or sport_obj.get("sportType") or ""
+            else:
+                sport_key = str(sport_obj)
+            
+            if not sport_key:
+                sport_key = str(w.get("sportTypeKey") or "")
 
-    return sessions    
+            title = w.get("workoutName") or w.get("title") or "Running Workout"
+
+            # Match running workouts
+            if "run" in sport_key.lower() or "running" in sport_key.lower() or "tempo" in title.lower() or "run" in title.lower():
+                dur_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds") or 0
+                
+                # Check if this workout is already listed from calendar
+                if not any(s["title"].lower() == title.lower() for s in sessions):
+                    sessions.append({
+                        "title": title,
+                        "date": date.today(),
+                        "duration_min": round(dur_sec / 60) if dur_sec else None,
+                    })
+    except Exception:  # noqa: BLE001
+        pass
+
+    return sessions  
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
@@ -1001,16 +1023,34 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-# Planned Sessions Section (from the AI Training Plan Coach)
+    # Planned Sessions Section (Direct from Garmin Connect API)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    try:
-        plan = db.get_plan(start_of_week)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load planned sessions: {exc}")
-        plan = None
+    planned_sessions = fetch_planned_sessions_live(client, start_of_week, end_of_week)
 
-    render_planned_sessions(plan, start_of_week, end_of_week)
+    if not planned_sessions:
+        st.caption("No running sessions planned this calendar week.")
+    else:
+        planned_sessions.sort(key=lambda s: s["date"])
+        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
+
+        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
+        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
+
+        logs_html = '<div class="activity-totals-grid">'
+        for s in planned_sessions:
+            date_label = s["date"].strftime("%a, %b %d")
+            title = s["title"]
+            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
+            logs_html += (
+                f'<div class="activity-card">'
+                f'<div class="activity-date">{date_label}</div>'
+                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
+                f'</div>'
+            )
+        logs_html += "</div>"
+        st.markdown(logs_html, unsafe_allow_html=True)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
