@@ -248,7 +248,11 @@ def fetch_hrv(_client, date_str):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_latest_sleep(_client):
     """
-    Fetches sleep data strictly for last night (yesterday's calendar date).
+    Fetches sleep data strictly for last night.
+
+    Garmin files a sleep session under the date the sleeper woke up
+    (today), not the date they went to bed (yesterday) — so we query
+    today's calendar date to get last night's sleep.
 
     Args:
         _client (Garmin): Authenticated Garmin API client.
@@ -256,16 +260,16 @@ def fetch_latest_sleep(_client):
     Returns:
         tuple: (date_string, sleep_json) if available, else (None, None).
     """
-    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    
+    today = date.today().strftime("%Y-%m-%d")
+
     try:
-        sleep = _client.get_sleep_data(yesterday)
+        sleep = _client.get_sleep_data(today)
         if not sleep:
             return None, None
             
         dto = sleep.get("dailySleepDTO", {})
         if dto and dto.get("sleepTimeSeconds"):
-            return yesterday, sleep
+            return today, sleep
     except Exception:  # noqa: BLE001
         pass
 
