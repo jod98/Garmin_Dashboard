@@ -1001,34 +1001,16 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-    # Planned Sessions Section (Direct from Garmin Connect Calendar)
+# Planned Sessions Section (from the AI Training Plan Coach)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    planned_sessions = get_live_planned_sessions(client, start_of_week, end_of_week)
+    try:
+        plan = db.get_plan(start_of_week)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Could not load planned sessions: {exc}")
+        plan = None
 
-    if not planned_sessions:
-        st.caption("No running sessions planned this calendar week.")
-    else:
-        planned_sessions.sort(key=lambda s: s["date"])
-        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
-        
-        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
-        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
-        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
-
-        logs_html = '<div class="activity-totals-grid">'
-        for s in planned_sessions:
-            date_label = s["date"].strftime("%a, %b %d")
-            title = s["title"]
-            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
-            logs_html += (
-                f'<div class="activity-card">'
-                f'<div class="activity-date">{date_label}</div>'
-                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
-                f'</div>'
-            )
-        logs_html += "</div>"
-        st.markdown(logs_html, unsafe_allow_html=True)
+    render_planned_sessions(plan, start_of_week, end_of_week)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
