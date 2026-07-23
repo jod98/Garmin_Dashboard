@@ -421,16 +421,17 @@ def fetch_calendar_workouts(_client, year: int, month: int):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches planned running sessions directly from Garmin Connect.
-    Checks calendar entries strictly within start_date and end_date (Mon-Sun).
+    Fetches planned/scheduled activities directly from Garmin Connect Calendar 
+    strictly between start_date and end_date (Monday to Sunday of current week).
     """
     sessions = []
 
-    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Scheduled Runs)
     try:
+        # Fetch calendar items for current month
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
+        # If the week crosses month boundary, fetch next month as well
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
@@ -440,30 +441,52 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             if not isinstance(item, dict):
                 continue
 
-            # Extract date string
-            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
-            if not date_str:
+            # Garmin stores date in several possible keys:
+            raw_date_str = (
+                item.get("date") 
+                or item.get("startDateLocal") 
+                or item.get("itemDate") 
+                or item.get("dateLocal") 
+                or ""
+            )
+            
+            if not raw_date_str:
                 continue
+
+            # Strip time component if present (e.g. "2026-07-20T00:00:00" -> "2026-07-20")
+            date_str = str(raw_date_str)[:10]
 
             try:
                 item_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 continue
 
-            # Strict date boundary filter (Current Week: Mon -> Sun)
+            # Strict Mon-Sun window filter for current week
             if start_date <= item_date <= end_date:
-                title = item.get("title") or item.get("workoutName") or "Scheduled Run"
-                dur_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
+                title = (
+                    item.get("title") 
+                    or item.get("workoutName") 
+                    or item.get("name") 
+                    or "Scheduled Activity"
+                )
+                
+                dur_sec = (
+                    item.get("durationInSeconds") 
+                    or item.get("estimatedDurationInSecs") 
+                    or item.get("duration") 
+                    or 0
+                )
+                duration_min = round(dur_sec / 60) if dur_sec else None
 
                 sessions.append({
                     "title": title,
                     "date": item_date,
-                    "duration_min": round(dur_sec / 60) if dur_sec else None,
+                    "duration_min": duration_min,
                 })
     except Exception:  # noqa: BLE001
         pass
 
-    return sessions 
+    return sessions
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
@@ -738,19 +761,20 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-def render_planned_sessions(sessions):
+def render_planned_sessions(planned_sessions):
     """
-    Renders planned running sessions retrieved from Garmin Connect in a clean grid card layout.
+    Renders scheduled sessions directly from Garmin Calendar.
+    No top KPI summary boxes, strictly displays cards ordered by date.
     """
-    if not sessions:
-        st.caption("No running sessions planned this calendar week.")
+    if not planned_sessions:
+        st.caption("No activities scheduled in Garmin Calendar for this week.")
         return
 
     # Sort chronologically Mon -> Sun
-    sessions.sort(key=lambda s: s["date"])
+    planned_sessions.sort(key=lambda s: s["date"])
 
     logs_html = '<div class="activity-totals-grid">'
-    for s in sessions:
+    for s in planned_sessions:
         date_label = s["date"].strftime("%a, %b %d")
         title = s["title"]
         dur_span = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
