@@ -402,16 +402,18 @@ def fetch_max_metrics_with_lookback(_client):
     return {}
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_calendar_workouts(_client, start_date_str, end_date_str):
+def fetch_calendar_workouts(_client, year: int, month: int):
     """
     Fetches scheduled workouts/calendar items directly from Garmin Connect 
-    for the specified date range.
+    for the specified month.
     """
     try:
-        # Calls Garmin's calendar API endpoint for scheduled items
-        calendar_data = _client.get_calendar(start_date_str, end_date_str)
+        # get_calendar takes integer year and month (e.g., 2026, 7)
+        calendar_data = _client.get_calendar(year, month)
         if isinstance(calendar_data, dict):
             return calendar_data.get("calendarItems", [])
+        if isinstance(calendar_data, list):
+            return calendar_data
         return []
     except Exception:  # noqa: BLE001
         return []   
@@ -943,11 +945,13 @@ def main_page():
     # Planned Sessions Section (Direct from Garmin Connect Calendar)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    calendar_items = fetch_calendar_workouts(
-        client, 
-        start_of_week.strftime("%Y-%m-%d"), 
-        end_of_week.strftime("%Y-%m-%d")
-    )
+    # Pass the year and month as integers
+    calendar_items = fetch_calendar_workouts(client, start_of_week.year, start_of_week.month)
+
+    # If the week spans across month boundaries, also fetch next month's items
+    if start_of_week.month != end_of_week.month:
+        next_month_items = fetch_calendar_workouts(client, end_of_week.year, end_of_week.month)
+        calendar_items = calendar_items + next_month_items
 
     render_planned_sessions(calendar_items, start_of_week, end_of_week)
 
