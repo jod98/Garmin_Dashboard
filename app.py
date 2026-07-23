@@ -421,17 +421,18 @@ def fetch_calendar_workouts(_client, year: int, month: int):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches planned running sessions directly from Garmin Connect's Calendar
-    strictly within the current week's date window (Monday to Sunday).
+    Fetches planned running sessions directly from Garmin Connect.
+    Queries scheduled calendar entries for the week and checks the workout library.
     """
     sessions = []
 
+    # ------------------------------------------------------------------
+    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Primary)
+    # ------------------------------------------------------------------
     try:
-        # Fetch current month calendar items
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
-        # If week crosses month boundary, include next month as well
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
@@ -444,26 +445,14 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             date_str = item.get("date") or item.get("startDateLocal", "")[:10]
             if not date_str:
                 continue
-            
             try:
                 item_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 continue
 
-            # Strict date boundary filter: only keep items scheduled between Mon & Sun
             if start_date <= item_date <= end_date:
-                title = (
-                    item.get("title") 
-                    or item.get("workoutName") 
-                    or item.get("name") 
-                    or "Scheduled Run"
-                )
-                dur_sec = (
-                    item.get("durationInSeconds") 
-                    or item.get("estimatedDurationInSecs") 
-                    or item.get("duration") 
-                    or 0
-                )
+                title = item.get("title") or item.get("workoutName") or "Scheduled Run"
+                dur_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
 
                 sessions.append({
                     "title": title,
@@ -472,8 +461,6 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
                 })
     except Exception:  # noqa: BLE001
         pass
-
-    return sessions
 
     # ------------------------------------------------------------------
     # 2. Check Garmin Workout Library (Custom & Unscheduled Workouts)
