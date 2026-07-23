@@ -1,12 +1,16 @@
 """
 Performance & Health Dashboard
 ------------------------------
-A Streamlit dashboard that pulls live data from Garmin Connect
-(via the garminconnect library) for Garmin wearables. Displays running,
+A Streamlit multi-page app that pulls live data from Garmin Connect
+(via the garminconnect library) for Garmin wearables, and houses the AI
+Training Plan Coach pages. The "This Week" page displays running,
 cycling, and swimming activities along with general health metrics (HRV,
-sleep, training load, Body Battery).
+sleep, steps, Body Battery) plus this week's planned running sessions;
+"Current Plan" and "Weekly Check-In" are the AI coach pages.
 """
 
+import sys
+import os
 import datetime as dt
 from datetime import date, timedelta
 import pandas as pd
@@ -18,6 +22,9 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 
+sys.path.append(os.path.dirname(__file__))
+from core import db  # noqa: E402
+
 # --------------------------------------------------------------------------
 # PAGE CONFIG & MOBILE STYLING
 # --------------------------------------------------------------------------
@@ -25,7 +32,7 @@ st.set_page_config(
     page_title="Garmin Dashboard",
     page_icon="📈",
     layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 ACCENT = "#2DD4BF"
@@ -77,7 +84,7 @@ h1 {{
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    min-height: 72px;
+    min-height: 82px;
     box-sizing: border-box;
 }}
 
@@ -103,10 +110,7 @@ h1 {{
 .kpi-sub {{
     color: {MUTED};
     font-size: 0.62rem;
-    line-height: 1.1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
 }}
 
 .section-title {{
@@ -561,18 +565,18 @@ def find_sleep_score(obj):
 
 def interpret_hrv(hrv_payload, current_value):
     """
-    Builds a short, human-readable read on a nightly HRV value.
+    Builds a one-word read on a nightly HRV value: "Normal" or "Irregular".
 
-    Uses Garmin's own 'status' / baseline range from the HRV payload when
-    available (this is personalized to the user's own history), and falls
-    back to a simple comparison against the weekly average otherwise.
+    Uses Garmin's own 'status' field from the HRV payload when available
+    (this is personalized to the user's own history), and falls back to a
+    simple comparison against the weekly average otherwise.
 
     Args:
         hrv_payload (dict): Raw HRV API payload.
         current_value: The lastNightAvg value being displayed (int/float/str).
 
     Returns:
-        str: Short descriptive label, or "" if nothing usable is available.
+        str: "Normal", "Irregular", or "" if nothing usable is available.
     """
     if not isinstance(hrv_payload, dict) or current_value in (None, "-"):
         return ""
@@ -583,26 +587,14 @@ def interpret_hrv(hrv_payload, current_value):
 
     status = summary.get("status")
     if status:
-        label_map = {
-            "BALANCED": "Balanced",
-            "UNBALANCED": "Unbalanced",
-            "LOW": "Low for you",
-            "POOR": "Poor",
-        }
-        label = label_map.get(str(status).upper(), str(status).title())
-        baseline = summary.get("baseline", {})
-        if isinstance(baseline, dict) and baseline.get("balancedLow") and baseline.get("balancedUpper"):
-            return f"{label} (your normal range: {baseline['balancedLow']}-{baseline['balancedUpper']}ms)"
-        return label
+        return "Normal" if str(status).upper() == "BALANCED" else "Irregular"
 
     weekly_avg = summary.get("weeklyAvg")
     try:
-        if weekly_avg and float(current_value) < float(weekly_avg) * 0.9:
-            return f"Below your recent avg ({weekly_avg}ms)"
-        if weekly_avg and float(current_value) > float(weekly_avg) * 1.1:
-            return f"Above your recent avg ({weekly_avg}ms)"
+        if weekly_avg and (float(current_value) < float(weekly_avg) * 0.9 or float(current_value) > float(weekly_avg) * 1.1):
+            return "Irregular"
         if weekly_avg:
-            return f"In line with your recent avg ({weekly_avg}ms)"
+            return "Normal"
     except (TypeError, ValueError):
         pass
 
@@ -611,8 +603,8 @@ def interpret_hrv(hrv_payload, current_value):
 
 def interpret_body_battery(current_value):
     """
-    Bands a current Body Battery reading (0-100) into Garmin's published
-    zones so it's clear whether energy reserves are high or running low.
+    Bands a current Body Battery reading (0-100) into a single word:
+    Excellent / Good / Low / Very Low.
 
     Args:
         current_value: The current Body Battery level (int/float/str).
@@ -626,12 +618,12 @@ def interpret_body_battery(current_value):
         return ""
 
     if value >= 76:
-        return "High - well charged"
+        return "Excellent"
     if value >= 51:
-        return "Good - solid reserves"
+        return "Good"
     if value >= 26:
-        return "Low - consider easing up"
-    return "Very low - prioritize rest"
+        return "Low"
+    return "Very Low"
 
 
 def sport_tab(df, sport_key, start_of_week, end_of_week):
@@ -683,202 +675,313 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-# --------------------------------------------------------------------------
-# SIDEBAR CONTROLS
-# --------------------------------------------------------------------------
-st.sidebar.markdown("### Settings")
-days_back = st.sidebar.slider("History Window (days)", 7, 90, 28)
-if st.sidebar.button("Refresh Data", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+def render_planned_sessions(plan, start_of_week, end_of_week):
+    """
+    Renders this week's planned running sessions from the AI coach's saved
+    plan, in the same visual style as the "This Week: Progress" section
+    (a small totals row followed by a grid of activity-style cards).
+
+    Args:
+        plan (dict | None): Row returned by db.get_plan() for this week, or None.
+        start_of_week (datetime.date): Monday of the current calendar week.
+        end_of_week (datetime.date): Sunday of the current calendar week.
+    """
+    if not plan:
+        st.info("No plan generated for this week yet — head to Current Plan to set one up.")
+        return
+
+    sessions = plan.get("sessions", [])
+    if isinstance(sessions, dict):
+        sessions = sessions.get("sessions", [])
+
+    run_sessions = []
+    for s in sessions:
+        if not isinstance(s, dict) or (s.get("sport") or "").lower() != "run":
+            continue
+        try:
+            s_date = dt.datetime.strptime(s.get("date", ""), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if start_of_week <= s_date <= end_of_week:
+            run_sessions.append({**s, "_date": s_date})
+
+    if not run_sessions:
+        st.caption("No running sessions planned this calendar week.")
+        return
+
+    run_sessions.sort(key=lambda s: s["_date"])
+
+    total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
+    card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
+    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min", "")
+    st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
+
+    logs_html = '<div class="activity-totals-grid">'
+    for s in run_sessions:
+        date_label = s["_date"].strftime("%a, %b %d")
+        title = s.get("title") or "Run"
+        duration_min = s.get("duration_min")
+        duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
+        intensity = (s.get("intensity") or "").title()
+        intensity_line = f'<div class="activity-pace">Intensity: {intensity}</div>' if intensity else ""
+        logs_html += (
+            f'<div class="activity-card">'
+            f'<div class="activity-date">{date_label}</div>'
+            f'<div class="activity-metrics"><strong>{title}</strong>{duration_span}</div>'
+            f'{intensity_line}'
+            f'</div>'
+        )
+    logs_html += "</div>"
+    st.markdown(logs_html, unsafe_allow_html=True)
 
 
-# --------------------------------------------------------------------------
-# DATA RETRIEVAL & PROCESSING PIPELINE
-# --------------------------------------------------------------------------
-client, error = get_garmin_client()
-if error:
-    st.error(f"Connection issue: {error}")
-    st.stop()
 
-st.session_state.client = client
 
-today = dt.date.today()
-history_days = max(days_back, today.weekday() + 1)
-start_date = today - timedelta(days=history_days)
-today_str = today.strftime("%Y-%m-%d")
+def main_page():
+    """
+    Renders the full "This Week" dashboard page: sidebar controls, today's
+    snapshot, this week's completed activity progress, and this week's
+    planned running sessions pulled from the AI coach's saved plan.
+    """
+    # --------------------------------------------------------------------------
+    # SIDEBAR CONTROLS
+    # --------------------------------------------------------------------------
+    st.sidebar.markdown("### Settings")
+    days_back = st.sidebar.slider("History Window (days)", 7, 90, 28)
+    if st.sidebar.button("Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-start_of_week = today - timedelta(days=today.weekday())
-end_of_week = start_of_week + timedelta(days=6)
 
-# Execute API queries
-stats = fetch_day_stats(client, today_str)
-hrv = fetch_hrv(client, today_str)
-sleep_date, sleep = fetch_latest_sleep(client)
-sleep_history = fetch_sleep_history(client, 7)
-training_status = fetch_training_status(client, today_str)
-user_profile = fetch_user_profile(client)
-max_metrics = fetch_max_metrics_with_lookback(client)
-body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
-raw_activities = fetch_activities(client, 0, 50)
+    # --------------------------------------------------------------------------
+    # DATA RETRIEVAL & PROCESSING PIPELINE
+    # --------------------------------------------------------------------------
+    client, error = get_garmin_client()
+    if error:
+        st.error(f"Connection issue: {error}")
+        st.stop()
 
-# Parse historical activities list
-records = []
-for a in raw_activities:
-    a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
-    if any(k in a_type for k in ["running", "run"]):
-        sport = "running"
-    elif any(k in a_type for k in ["cycling", "biking", "bike"]):
-        sport = "cycling"
-    elif "swim" in a_type:
-        sport = "swimming"
+    st.session_state.client = client
+
+    today = dt.date.today()
+    history_days = max(days_back, today.weekday() + 1)
+    start_date = today - timedelta(days=history_days)
+    today_str = today.strftime("%Y-%m-%d")
+
+    start_of_week = today - timedelta(days=today.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+
+    # Execute API queries
+    stats = fetch_day_stats(client, today_str)
+    hrv = fetch_hrv(client, today_str)
+    sleep_date, sleep = fetch_latest_sleep(client)
+    sleep_history = fetch_sleep_history(client, 7)
+    training_status = fetch_training_status(client, today_str)
+    user_profile = fetch_user_profile(client)
+    max_metrics = fetch_max_metrics_with_lookback(client)
+    body_battery_raw = fetch_body_battery(client, (today - timedelta(days=6)).strftime("%Y-%m-%d"), today_str)
+    raw_activities = fetch_activities(client, 0, 50)
+
+    # Parse historical activities list
+    records = []
+    for a in raw_activities:
+        a_type = (a.get("activityType", {}) or {}).get("typeKey", "")
+        if any(k in a_type for k in ["running", "run"]):
+            sport = "running"
+        elif any(k in a_type for k in ["cycling", "biking", "bike"]):
+            sport = "cycling"
+        elif "swim" in a_type:
+            sport = "swimming"
+        else:
+            continue
+
+        start_str = a.get("startTimeLocal", "")
+        try:
+            a_date = dt.datetime.strptime(start_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+
+        distance_m = a.get("distance", 0) or 0
+        duration_s = a.get("duration", 0) or 0
+        records.append(
+            {
+                "sport": sport,
+                "date": a_date,
+                "distance_km": m_to_km(distance_m),
+                "duration_s": duration_s,
+                "duration_hms": sec_to_hms(duration_s),
+                "avg_hr": a.get("averageHR"),
+                "vo2": a.get("vo2MaxValue") or a.get("vO2MaxValue") or a.get("vO2maxValue"),
+                "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
+            }
+        )
+
+    df = pd.DataFrame(records)
+
+
+    # --------------------------------------------------------------------------
+    # DEEP INSPECTION & METRIC RESOLUTION
+    # --------------------------------------------------------------------------
+    vo2_max_val = "-"
+    status_label = "Active"
+
+    # Priority 1: Search training status dictionary
+    found_vo2_target = find_vo2(training_status)
+
+    # Priority 2: Search max metrics 30-day loop dump
+    if not found_vo2_target:
+        found_vo2_target = find_vo2(max_metrics)
+
+    # Priority 3: Search User Profile data structure
+    if not found_vo2_target:
+        found_vo2_target = find_vo2(user_profile)
+
+    # Priority 4: Look for embedded values directly within historical activity objects
+    if not found_vo2_target and not df.empty:
+        valid_activity_vo2 = df[df["vo2"].notna() & (df["vo2"] != "-")].copy()
+        if not valid_activity_vo2.empty:
+            found_vo2_target = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["vo2"]
+
+    # Convert and cast final VO2 data safely
+    if found_vo2_target is not None:
+        try:
+            vo2_max_val = int(round(float(found_vo2_target)))
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Format Training Status label
+    if isinstance(training_status, dict) and training_status:
+        recent_status = training_status.get("mostRecentTrainingStatus", {})
+        if isinstance(recent_status, dict):
+            status_data = recent_status.get("latestTrainingStatusData", {})
+            if isinstance(status_data, dict):
+                status_label = status_data.get("trainingStatus") or status_label
     else:
-        continue
+        status_label = "Productive" if vo2_max_val != "-" else "No Data"
 
-    start_str = a.get("startTimeLocal", "")
-    try:
-        a_date = dt.datetime.strptime(start_str[:10], "%Y-%m-%d").date()
-    except ValueError:
-        continue
+    status_label = str(status_label).replace("_", " ").title()
 
-    distance_m = a.get("distance", 0) or 0
-    duration_s = a.get("duration", 0) or 0
-    records.append(
-        {
-            "sport": sport,
-            "date": a_date,
-            "distance_km": m_to_km(distance_m),
-            "duration_s": duration_s,
-            "duration_hms": sec_to_hms(duration_s),
-            "avg_hr": a.get("averageHR"),
-            "vo2": a.get("vo2MaxValue") or a.get("vO2MaxValue") or a.get("vO2maxValue"),
-            "pace": pace_min_per_km(distance_m, duration_s) if sport != "cycling" else "-",
-        }
+    # Parse daily vital statistics safely
+    rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
+    hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, dict) else "-"
+
+    sleep_string = "-"
+    sleep_score = "-"
+    sleep_date_used = "-"
+
+    if sleep:
+        sleep_date_used = sleep_date
+        dto = sleep.get("dailySleepDTO", {})
+
+        if isinstance(dto, dict):
+            secs = dto.get("sleepTimeSeconds")
+            if secs:
+                sleep_string = sec_to_hr_min(secs)
+
+        score = find_sleep_score(sleep)
+        if score is not None:
+            sleep_score = score
+
+    avg_sleep_str = sec_to_hr_min(sum(sleep_history) / len(sleep_history)) if sleep_history else "-"
+
+    bb_val = "-"
+    if body_battery_raw and isinstance(body_battery_raw, list):
+        try:
+            levels = body_battery_raw[-1].get("bodyBatteryValuesArray", [])
+            if levels:
+                bb_val = levels[-1][1]
+        except Exception:  # noqa: BLE001
+            pass
+
+    steps_val = stats.get("totalSteps", "-") if isinstance(stats, dict) else "-"
+
+
+    # --------------------------------------------------------------------------
+    # MAIN DASHBOARD UI LAYOUT
+    # --------------------------------------------------------------------------
+    st.title("Performance & Health Dashboard")
+    st.caption(f"Last synchronized: {get_sync_timestamp().strftime('%H:%M')}")
+
+    # Snapshot Metrics Grid
+    st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
+
+    hrv_note = interpret_hrv(hrv, hrv_val)
+    bb_note = interpret_body_battery(bb_val)
+
+    c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
+    c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
+    c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", hrv_note)
+    c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_note)
+    sleep_sub_display = (
+        f"Score: {sleep_score}<br>7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
     )
 
-df = pd.DataFrame(records)
+    c5 = build_kpi_html("Sleep", sleep_string, sleep_sub_display)
+    c6 = build_kpi_html(
+        "Steps",
+        f"{steps_val:,}" if isinstance(steps_val, (int, float)) else "-",
+        "Target: 7,500-10,000"
+    )
 
+    snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
+    st.markdown(snapshot_html, unsafe_allow_html=True)
 
-# --------------------------------------------------------------------------
-# DEEP INSPECTION & METRIC RESOLUTION
-# --------------------------------------------------------------------------
-vo2_max_val = "-"
-status_label = "Active"
+    # Sport Tabs & Progress Section
+    st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
 
-# Priority 1: Search training status dictionary
-found_vo2_target = find_vo2(training_status)
+    if df.empty:
+        st.info("No activities tracked inside your current history range.")
+    else:
+        tab_run, tab_bike, tab_swim = st.tabs(["🏃 Run", "🚴 Bike", "🏊 Swim"])
+        with tab_run:
+            sport_tab(df, "running", start_of_week, end_of_week)
+        with tab_bike:
+            sport_tab(df, "cycling", start_of_week, end_of_week)
+        with tab_swim:
+            sport_tab(df, "swimming", start_of_week, end_of_week)
 
-# Priority 2: Search max metrics 30-day loop dump
-if not found_vo2_target:
-    found_vo2_target = find_vo2(max_metrics)
+    st.divider()
 
-# Priority 3: Search User Profile data structure
-if not found_vo2_target:
-    found_vo2_target = find_vo2(user_profile)
+    # Planned Sessions Section (from the AI Training Plan Coach)
+    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-# Priority 4: Look for embedded values directly within historical activity objects
-if not found_vo2_target and not df.empty:
-    valid_activity_vo2 = df[df["vo2"].notna() & (df["vo2"] != "-")].copy()
-    if not valid_activity_vo2.empty:
-        found_vo2_target = valid_activity_vo2.sort_values("date", ascending=False).iloc[0]["vo2"]
-
-# Convert and cast final VO2 data safely
-if found_vo2_target is not None:
     try:
-        vo2_max_val = int(round(float(found_vo2_target)))
-    except Exception:  # noqa: BLE001
-        pass
+        plan = db.get_plan(start_of_week)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Could not load planned sessions: {exc}")
+        plan = None
 
-# Format Training Status label
-if isinstance(training_status, dict) and training_status:
-    recent_status = training_status.get("mostRecentTrainingStatus", {})
-    if isinstance(recent_status, dict):
-        status_data = recent_status.get("latestTrainingStatusData", {})
-        if isinstance(status_data, dict):
-            status_label = status_data.get("trainingStatus") or status_label
-else:
-    status_label = "Productive" if vo2_max_val != "-" else "No Data"
+    render_planned_sessions(plan, start_of_week, end_of_week)
 
-status_label = str(status_label).replace("_", " ").title()
-
-# Parse daily vital statistics safely
-rhr = stats.get("restingHeartRate", "-") if isinstance(stats, dict) else "-"
-hrv_val = hrv.get("hrvSummary", {}).get("lastNightAvg", "-") if isinstance(hrv, dict) else "-"
-
-sleep_string = "-"
-sleep_score = "-"
-sleep_date_used = "-"
-
-if sleep:
-    sleep_date_used = sleep_date
-    dto = sleep.get("dailySleepDTO", {})
-
-    if isinstance(dto, dict):
-        secs = dto.get("sleepTimeSeconds")
-        if secs:
-            sleep_string = sec_to_hr_min(secs)
-
-    score = find_sleep_score(sleep)
-    if score is not None:
-        sleep_score = score
-
-avg_sleep_str = sec_to_hr_min(sum(sleep_history) / len(sleep_history)) if sleep_history else "-"
-
-bb_val = "-"
-if body_battery_raw and isinstance(body_battery_raw, list):
-    try:
-        levels = body_battery_raw[-1].get("bodyBatteryValuesArray", [])
-        if levels:
-            bb_val = levels[-1][1]
-    except Exception:  # noqa: BLE001
-        pass
-
-steps_val = stats.get("totalSteps", "-") if isinstance(stats, dict) else "-"
+    st.divider()
 
 
 # --------------------------------------------------------------------------
-# MAIN DASHBOARD UI LAYOUT
+# MULTI-PAGE NAVIGATION
 # --------------------------------------------------------------------------
-st.title("Performance & Health Dashboard")
-st.caption(f"Last synchronized: {get_sync_timestamp().strftime('%H:%M')}")
-
-# Snapshot Metrics Grid
-st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
-
-hrv_note = interpret_hrv(hrv, hrv_val)
-bb_note = interpret_body_battery(bb_val)
-
-c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
-c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
-c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", hrv_note)
-c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_note)
-sleep_value_display = (
-    f"{sleep_string} - - - Score: {sleep_score}" if sleep_date_used != "-" else "-"
-)
-sleep_sub_display = f"7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
-
-c5 = build_kpi_html("Sleep", sleep_value_display, sleep_sub_display)
-c6 = build_kpi_html(
-    "Steps",
-    f"{steps_val:,}" if isinstance(steps_val, (int, float)) else "-",
-    "Target: 7,500-10,000"
+this_week_page = st.Page(
+    main_page,
+    title="This Week",
+    icon="📈",
+    default=True,
 )
 
-snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
-st.markdown(snapshot_html, unsafe_allow_html=True)
+current_plan_page = st.Page(
+    "pages/2_Current_Plan.py",
+    title="Current Plan",
+    icon="📋",
+)
 
-# Sport Tabs & Progress Section
-st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
+feedback_page = st.Page(
+    "pages/1_Weekly_Check-In.py",
+    title="Weekly Check-In",
+    icon="💬",
+)
 
-if df.empty:
-    st.info("No activities tracked inside your current history range.")
-else:
-    tab_run, tab_bike, tab_swim = st.tabs(["🏃 Run", "🚴 Bike", "🏊 Swim"])
-    with tab_run:
-        sport_tab(df, "running", start_of_week, end_of_week)
-    with tab_bike:
-        sport_tab(df, "cycling", start_of_week, end_of_week)
-    with tab_swim:
-        sport_tab(df, "swimming", start_of_week, end_of_week)
+pg = st.navigation([
+    this_week_page,
+    current_plan_page,
+    feedback_page,
+])
 
-st.divider()
+pg.run()
