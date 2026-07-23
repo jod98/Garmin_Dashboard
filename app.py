@@ -452,10 +452,12 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
 
             if start_date <= item_date <= end_date:
                 title = item.get("title") or item.get("workoutName") or "Scheduled Run"
+                dur_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
 
                 sessions.append({
                     "title": title,
                     "date": item_date,
+                    "duration_min": round(dur_sec / 60) if dur_sec else None,
                 })
     except Exception:  # noqa: BLE001
         pass
@@ -484,12 +486,14 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
 
             # Match running workouts
             if "run" in sport_key.lower() or "running" in sport_key.lower() or "tempo" in title.lower() or "run" in title.lower():
+                dur_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds") or 0
                 
                 # Check if this workout is already listed from calendar
                 if not any(s["title"].lower() == title.lower() for s in sessions):
                     sessions.append({
                         "title": title,
                         "date": date.today(),
+                        "duration_min": round(dur_sec / 60) if dur_sec else None,
                     })
     except Exception:  # noqa: BLE001
         pass
@@ -792,10 +796,14 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
                 continue
 
             if start_of_week <= s_date <= end_of_week:
+                # Extract duration in minutes if present
+                duration_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
+                duration_min = round(duration_sec / 60) if duration_sec else None
 
                 run_sessions.append({
                     "title": item.get("title") or item.get("workoutName") or "Planned Run",
                     "date": s_date,
+                    "duration_min": duration_min,
                     "item_type": item.get("itemType", "").title()
                 })
 
@@ -805,13 +813,21 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
 
     run_sessions.sort(key=lambda s: s["date"])
 
+    total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
+    card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
+    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+    st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
+
     logs_html = '<div class="activity-totals-grid">'
     for s in run_sessions:
         date_label = s["date"].strftime("%a, %b %d")
         title = s["title"]
+        duration_min = s.get("duration_min")
+        duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
+            f'<div class="activity-metrics"><strong>{title}</strong>{duration_span}</div>'
             f'</div>'
         )
     logs_html += "</div>"
@@ -1016,14 +1032,21 @@ def main_page():
         st.caption("No running sessions planned this calendar week.")
     else:
         planned_sessions.sort(key=lambda s: s["date"])
+        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
+
+        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
+        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
         logs_html = '<div class="activity-totals-grid">'
         for s in planned_sessions:
             date_label = s["date"].strftime("%a, %b %d")
             title = s["title"]
+            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
             logs_html += (
                 f'<div class="activity-card">'
                 f'<div class="activity-date">{date_label}</div>'
+                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
                 f'</div>'
             )
         logs_html += "</div>"
