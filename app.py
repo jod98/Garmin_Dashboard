@@ -950,7 +950,7 @@ def main_page():
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
     # Planned Sessions Section (Direct from Garmin Connect Calendar)
-=    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
     planned_sessions = get_live_planned_sessions(client, start_of_week, end_of_week)
 
