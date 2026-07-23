@@ -967,6 +967,10 @@ def main_page():
 
     st.divider()
 
+    # Add this temporarily inside main_page() to inspect the raw API output:
+    calendar_items = fetch_calendar_workouts(client, start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d"))
+    st.write("Raw Garmin Calendar Data:", calendar_items)
+
 
 # --------------------------------------------------------------------------
 # MULTI-PAGE NAVIGATION
