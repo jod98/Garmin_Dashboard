@@ -913,7 +913,7 @@ def main_page():
     c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", hrv_note)
     c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_note)
     sleep_sub_display = (
-        f"Score: {sleep_score}<br>7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
+        f"Score: {sleep_score}<br>7d Avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
     )
 
     c5 = build_kpi_html("Sleep", sleep_string, sleep_sub_display)
@@ -925,6 +925,17 @@ def main_page():
 
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
+
+    # Planned Sessions Section (from the AI Training Plan Coach)
+    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
+
+    try:
+        plan = db.get_plan(start_of_week)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Could not load planned sessions: {exc}")
+        plan = None
+
+    render_planned_sessions(plan, start_of_week, end_of_week)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
@@ -939,19 +950,6 @@ def main_page():
             sport_tab(df, "cycling", start_of_week, end_of_week)
         with tab_swim:
             sport_tab(df, "swimming", start_of_week, end_of_week)
-
-    st.divider()
-
-    # Planned Sessions Section (from the AI Training Plan Coach)
-    st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
-
-    try:
-        plan = db.get_plan(start_of_week)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load planned sessions: {exc}")
-        plan = None
-
-    render_planned_sessions(plan, start_of_week, end_of_week)
 
     st.divider()
 
