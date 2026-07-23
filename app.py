@@ -292,6 +292,37 @@ def fetch_latest_sleep(_client):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+def fetch_sleep_history(_client, num_nights):
+    """
+    Fetches sleep duration for each of the last N nights, to support a
+    rolling average. Sleep is filed under the wake-up date, so the last
+    N calendar days (today back to today - N + 1) covers the last N nights.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        num_nights (int): How many most-recent nights to pull.
+
+    Returns:
+        list[int]: Sleep duration in seconds, one entry per night that had data.
+    """
+    durations = []
+    for i in range(num_nights):
+        day_str = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            sleep = _client.get_sleep_data(day_str)
+        except Exception:  # noqa: BLE001
+            continue
+        if not sleep:
+            continue
+        dto = sleep.get("dailySleepDTO", {})
+        if isinstance(dto, dict):
+            secs = dto.get("sleepTimeSeconds")
+            if secs:
+                durations.append(secs)
+    return durations
+
+
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_body_battery(_client, start_date, end_date):
     """
     Fetches Body Battery metrics across a date range.
@@ -399,6 +430,24 @@ def sec_to_hms(seconds):
     return f"{h}:{mn:02d}:{s:02d}" if h else f"{mn}:{s:02d}"
 
 
+def sec_to_hrs_mins(seconds):
+    """
+    Converts a duration in seconds into a 'Xhrs Ymins' style string.
+    Used for the sleep average, where this reads more naturally than the
+    H:MM:SS clock format used elsewhere.
+
+    Args:
+        seconds (float/int): Duration in seconds.
+
+    Returns:
+        str: Formatted string, e.g. "7hrs 15mins".
+    """
+    seconds = int(seconds or 0)
+    h, rem = divmod(seconds, 3600)
+    mn = rem // 60
+    return f"{h}hrs {mn}mins"
+
+
 def pace_min_per_km(distance_m, duration_s):
     """
     Calculates running/swimming pace in minutes per kilometer.
@@ -504,39 +553,6 @@ def find_sleep_score(obj):
     elif isinstance(obj, list):
         for item in obj:
             res = find_sleep_score(item)
-            if res is not None:
-                return res
-
-    return None
-
-
-def find_training_load(obj):
-    """
-    Recursively inspects nested structures to find a Training Load value.
-    Prefers an exact 'trainingLoad' key match before falling back to any
-    key containing 'trainingload' (e.g. acute/chronic load variants).
-
-    Args:
-        obj (dict | list): Training status payload structure.
-
-    Returns:
-        int/float or None: Extracted Training Load value if found, else None.
-    """
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if str(key).lower() == "trainingload" and isinstance(value, (int, float)):
-                return value
-
-        for key, value in obj.items():
-            if "trainingload" in str(key).lower() and isinstance(value, (int, float)):
-                return value
-            res = find_training_load(value)
-            if res is not None:
-                return res
-
-    elif isinstance(obj, list):
-        for item in obj:
-            res = find_training_load(item)
             if res is not None:
                 return res
 
@@ -699,6 +715,7 @@ end_of_week = start_of_week + timedelta(days=6)
 stats = fetch_day_stats(client, today_str)
 hrv = fetch_hrv(client, today_str)
 sleep_date, sleep = fetch_latest_sleep(client)
+sleep_history = fetch_sleep_history(client, 7)
 training_status = fetch_training_status(client, today_str)
 user_profile = fetch_user_profile(client)
 max_metrics = fetch_max_metrics_with_lookback(client)
@@ -805,6 +822,8 @@ if sleep:
     if score is not None:
         sleep_score = score
 
+avg_sleep_str = sec_to_hrs_mins(sum(sleep_history) / len(sleep_history)) if sleep_history else "-"
+
 bb_val = "-"
 if body_battery_raw and isinstance(body_battery_raw, list):
     try:
@@ -814,20 +833,7 @@ if body_battery_raw and isinstance(body_battery_raw, list):
     except Exception:  # noqa: BLE001
         pass
 
-load_val = "-"
-if isinstance(training_status, dict):
-    load_balance = training_status.get("mostRecentTrainingLoadBalance", {})
-    if isinstance(load_balance, dict):
-        metrics_status = load_balance.get("metricsTrainingStatus", {})
-        if isinstance(metrics_status, dict):
-            load_val = metrics_status.get("trainingLoad", "-")
-
-# Fallback: Garmin's response shape shifts between accounts/devices, so if
-# the expected key path didn't resolve, fall back to a recursive search.
-if load_val == "-":
-    found_load = find_training_load(training_status)
-    if found_load is not None:
-        load_val = int(round(found_load)) if isinstance(found_load, float) else found_load
+steps_val = stats.get("totalSteps", "-") if isinstance(stats, dict) else "-"
 
 
 # --------------------------------------------------------------------------
@@ -849,9 +855,9 @@ c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_no
 c5 = build_kpi_html(
     "Sleep",
     sleep_string,
-    f"Score: {sleep_score}" if sleep_date_used != "-" else "No Data"
+    f"Score: {sleep_score} • 7d avg: {avg_sleep_str}" if sleep_date_used != "-" else "No Data"
 )
-c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")
+c6 = build_kpi_html("Steps", f"{steps_val:,}" if isinstance(steps_val, (int, float)) else "-", "")
 
 snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
 st.markdown(snapshot_html, unsafe_allow_html=True)
