@@ -418,21 +418,21 @@ def fetch_calendar_workouts(_client, year: int, month: int):
     except Exception:  # noqa: BLE001
         return []   
 
-# Notice: ttl set to 0 during testing so Streamlit DOES NOT cache stale results!
-@st.cache_data(ttl=0, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches planned running sessions directly from Garmin Connect's calendar.
-    Strictly parses scheduled dates and limits to start_date <= date <= end_date.
+    Fetches planned running sessions directly from Garmin Connect.
+    Queries scheduled calendar entries for the week and checks the workout library.
     """
     sessions = []
 
+    # ------------------------------------------------------------------
+    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Primary)
+    # ------------------------------------------------------------------
     try:
-        # Fetch current month's calendar items from Garmin
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
-        # If week crosses into next month, fetch next month as well
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
@@ -442,49 +442,59 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             if not isinstance(item, dict):
                 continue
 
-            # Check if this item is a workout / scheduled run
-            item_type = str(item.get("itemType") or item.get("workoutType") or "").lower()
-            sport_type = str(item.get("sportTypeKey") or item.get("sportType") or "").lower()
-
-            # Filter for workouts / scheduled running activities
-            is_run = "run" in sport_type or "running" in sport_type or item_type in ["workout", "workoutscheduled", "scheduled_workout"]
-            if not is_run:
+            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
+            if not date_str:
                 continue
-
-            # Extract date string directly from Garmin Calendar entry
-            raw_date = (
-                item.get("date")
-                or item.get("startDateLocal")
-                or item.get("calendarDate")
-                or item.get("itemDate")
-                or ""
-            )
-
-            if not raw_date:
-                continue
-
-            # Format YYYY-MM-DD
-            date_str = str(raw_date)[:10]
-
             try:
                 item_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 continue
 
-            # STRICT Mon -> Sun filter for current week
             if start_date <= item_date <= end_date:
                 title = item.get("title") or item.get("workoutName") or "Scheduled Run"
-                dur_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
 
                 sessions.append({
                     "title": title,
                     "date": item_date,
-                    "duration_min": round(dur_sec / 60) if dur_sec else None,
                 })
     except Exception:  # noqa: BLE001
         pass
 
-    return sessions
+    # ------------------------------------------------------------------
+    # 2. Check Garmin Workout Library (Custom & Unscheduled Workouts)
+    # ------------------------------------------------------------------
+    try:
+        workouts = _client.get_workouts() or []
+        for w in workouts:
+            if not isinstance(w, dict):
+                continue
+            
+            # Robust extraction of sport key from various Garmin JSON schemas
+            sport_obj = w.get("sportType") or {}
+            sport_key = ""
+            if isinstance(sport_obj, dict):
+                sport_key = sport_obj.get("sportTypeKey") or sport_obj.get("sportType") or ""
+            else:
+                sport_key = str(sport_obj)
+            
+            if not sport_key:
+                sport_key = str(w.get("sportTypeKey") or "")
+
+            title = w.get("workoutName") or w.get("title") or "Running Workout"
+
+            # Match running workouts
+            if "run" in sport_key.lower() or "running" in sport_key.lower() or "tempo" in title.lower() or "run" in title.lower():
+                
+                # Check if this workout is already listed from calendar
+                if not any(s["title"].lower() == title.lower() for s in sessions):
+                    sessions.append({
+                        "title": title,
+                        "date": date.today(),
+                    })
+    except Exception:  # noqa: BLE001
+        pass
+
+    return sessions  
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
@@ -759,27 +769,52 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-def render_planned_sessions(sessions):
+def render_planned_sessions(calendar_items, start_of_week, end_of_week):
     """
-    Renders planned running sessions retrieved from Garmin Connect in a clean grid layout.
+    Renders this week's planned running sessions directly from Garmin Connect's calendar.
     """
-    if not sessions:
-        st.caption("No running sessions planned for this calendar week.")
+    if not calendar_items:
+        st.caption("No running sessions planned this calendar week.")
         return
 
-    # Sort chronologically (Mon -> Sun)
-    sessions.sort(key=lambda s: s["date"])
+    run_sessions = []
+    for item in calendar_items:
+        # Ensure we filter for running sports/workouts
+        sport_type = str(item.get("sportTypeKey") or item.get("itemType") or "").lower()
+        item_type = str(item.get("itemType") or "").lower()
+        
+        # Garmin labels scheduled workouts as 'workout' or 'workoutScheduled'
+        if "run" in sport_type or "running" in sport_type or item_type in ["workout", "workoutscheduled"]:
+            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
+            try:
+                s_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+
+            if start_of_week <= s_date <= end_of_week:
+
+                run_sessions.append({
+                    "title": item.get("title") or item.get("workoutName") or "Planned Run",
+                    "date": s_date,
+                    "item_type": item.get("itemType", "").title()
+                })
+
+    if not run_sessions:
+        st.caption("No running sessions planned this calendar week.")
+        return
+
+    run_sessions.sort(key=lambda s: s["date"])
 
     logs_html = '<div class="activity-totals-grid">'
-    for s in sessions:
+    for s in run_sessions:
         date_label = s["date"].strftime("%a, %b %d")
         title = s["title"]
-        dur_span = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
-
+        duration_min = s.get("duration_min")
+        duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
-            f'<div class="activity-metrics"><strong>{title}</strong>{dur_span}</div>'
+            f'<div class="activity-metrics"><strong>{title}</strong>{duration_span}</div>'
             f'</div>'
         )
     logs_html += "</div>"
