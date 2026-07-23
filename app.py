@@ -422,26 +422,24 @@ def fetch_calendar_workouts(_client, year: int, month: int):
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
     Fetches planned running sessions directly from Garmin Connect.
-    Queries scheduled calendar entries for the week and checks the workout library.
+    First checks scheduled calendar entries for the current week, 
+    and falls back to checking unscheduled workouts in the library.
     """
     sessions = []
 
-    # ------------------------------------------------------------------
-    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Primary)
-    # ------------------------------------------------------------------
+    # 1. Fetch Calendar Items from Garmin Connect
     try:
+        # get_calendar takes integer parameters: (year, month)
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
+        # If week crosses month boundary, query next month as well
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
             items.extend(next_items)
 
         for item in items:
-            if not isinstance(item, dict):
-                continue
-
             date_str = item.get("date") or item.get("startDateLocal", "")[:10]
             if not date_str:
                 continue
@@ -462,43 +460,23 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
     except Exception:  # noqa: BLE001
         pass
 
-    # ------------------------------------------------------------------
-    # 2. Check Garmin Workout Library (Custom & Unscheduled Workouts)
-    # ------------------------------------------------------------------
-    try:
-        workouts = _client.get_workouts() or []
-        for w in workouts:
-            if not isinstance(w, dict):
-                continue
-            
-            # Robust extraction of sport key from various Garmin JSON schemas
-            sport_obj = w.get("sportType") or {}
-            sport_key = ""
-            if isinstance(sport_obj, dict):
-                sport_key = sport_obj.get("sportTypeKey") or sport_obj.get("sportType") or ""
-            else:
-                sport_key = str(sport_obj)
-            
-            if not sport_key:
-                sport_key = str(w.get("sportTypeKey") or "")
-
-            title = w.get("workoutName") or w.get("title") or "Running Workout"
-
-            # Match running workouts
-            if "run" in sport_key.lower() or "running" in sport_key.lower() or "tempo" in title.lower() or "run" in title.lower():
-                dur_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds") or 0
-                
-                # Check if this workout is already listed from calendar
-                if not any(s["title"].lower() == title.lower() for s in sessions):
+    # 2. Fallback: If no calendar entries found, check Garmin Workout Library
+    if not sessions:
+        try:
+            workouts = _client.get_workouts() or []
+            for w in workouts:
+                sport = str(w.get("sportType", {}).get("sportTypeKey") or "").lower()
+                if "run" in sport or sport == "running":
+                    est_dur = w.get("estimatedDurationInSecs") or 0
                     sessions.append({
-                        "title": title,
+                        "title": w.get("workoutName", "Garmin Workout"),
                         "date": date.today(),
-                        "duration_min": round(dur_sec / 60) if dur_sec else None,
+                        "duration_min": round(est_dur / 60) if est_dur else None,
                     })
-    except Exception:  # noqa: BLE001
-        pass
+        except Exception:  # noqa: BLE001
+            pass
 
-    return sessions
+    return sessions    
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
