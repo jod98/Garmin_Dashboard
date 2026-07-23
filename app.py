@@ -401,6 +401,21 @@ def fetch_max_metrics_with_lookback(_client):
             pass
     return {}
 
+ @st.cache_data(ttl=900, show_spinner=False)
+ def fetch_calendar_workouts(_client, start_date_str, end_date_str):
+    """
+    Fetches scheduled workouts/calendar items directly from Garmin Connect 
+    for the specified date range.
+    """
+    try:
+        # Calls Garmin's calendar API endpoint for scheduled items
+        calendar_data = _client.get_calendar(start_date_str, end_date_str)
+        if isinstance(calendar_data, dict):
+            return calendar_data.get("calendarItems", [])
+        return []
+    except Exception:  # noqa: BLE001
+        return []   
+
 
 # --------------------------------------------------------------------------
 # PARSING & FORMATTING HELPERS
@@ -675,66 +690,65 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-def render_planned_sessions(plan, start_of_week, end_of_week):
+def render_planned_sessions(calendar_items, start_of_week, end_of_week):
     """
-    Renders this week's planned running sessions from the AI coach's saved
-    plan, in the same visual style as the "This Week: Progress" section
-    (a small totals row followed by a grid of activity-style cards).
-
-    Args:
-        plan (dict | None): Row returned by db.get_plan() for this week, or None.
-        start_of_week (datetime.date): Monday of the current calendar week.
-        end_of_week (datetime.date): Sunday of the current calendar week.
+    Renders this week's planned running sessions directly from Garmin Connect's calendar.
     """
-    if not plan:
-        st.info("No plan generated for this week yet — head to Current Plan to set one up.")
+    if not calendar_items:
+        st.caption("No running sessions planned this calendar week.")
         return
 
-    sessions = plan.get("sessions", [])
-    if isinstance(sessions, dict):
-        sessions = sessions.get("sessions", [])
-
     run_sessions = []
-    for s in sessions:
-        if not isinstance(s, dict) or (s.get("sport") or "").lower() != "run":
-            continue
-        try:
-            s_date = dt.datetime.strptime(s.get("date", ""), "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if start_of_week <= s_date <= end_of_week:
-            run_sessions.append({**s, "_date": s_date})
+    for item in calendar_items:
+        # Ensure we filter for running sports/workouts
+        sport_type = str(item.get("sportTypeKey") or item.get("itemType") or "").lower()
+        item_type = str(item.get("itemType") or "").lower()
+        
+        # Garmin labels scheduled workouts as 'workout' or 'workoutScheduled'
+        if "run" in sport_type or "running" in sport_type or item_type in ["workout", "workoutscheduled"]:
+            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
+            try:
+                s_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+
+            if start_of_week <= s_date <= end_of_week:
+                # Extract duration in minutes if present
+                duration_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
+                duration_min = round(duration_sec / 60) if duration_sec else None
+
+                run_sessions.append({
+                    "title": item.get("title") or item.get("workoutName") or "Planned Run",
+                    "date": s_date,
+                    "duration_min": duration_min,
+                    "item_type": item.get("itemType", "").title()
+                })
 
     if not run_sessions:
         st.caption("No running sessions planned this calendar week.")
         return
 
-    run_sessions.sort(key=lambda s: s["_date"])
+    run_sessions.sort(key=lambda s: s["date"])
 
     total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
     card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
-    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min", "")
+    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
     st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
     logs_html = '<div class="activity-totals-grid">'
     for s in run_sessions:
-        date_label = s["_date"].strftime("%a, %b %d")
-        title = s.get("title") or "Run"
+        date_label = s["date"].strftime("%a, %b %d")
+        title = s["title"]
         duration_min = s.get("duration_min")
         duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
-        intensity = (s.get("intensity") or "").title()
-        intensity_line = f'<div class="activity-pace">Intensity: {intensity}</div>' if intensity else ""
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
             f'<div class="activity-metrics"><strong>{title}</strong>{duration_span}</div>'
-            f'{intensity_line}'
             f'</div>'
         )
     logs_html += "</div>"
     st.markdown(logs_html, unsafe_allow_html=True)
-
-
 
 
 def main_page():
@@ -926,16 +940,16 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-    # Planned Sessions Section (from the AI Training Plan Coach)
+    # Planned Sessions Section (Direct from Garmin Connect Calendar)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    try:
-        plan = db.get_plan(start_of_week)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load planned sessions: {exc}")
-        plan = None
+    calendar_items = fetch_calendar_workouts(
+        client, 
+        start_of_week.strftime("%Y-%m-%d"), 
+        end_of_week.strftime("%Y-%m-%d")
+    )
 
-    render_planned_sessions(plan, start_of_week, end_of_week)
+    render_planned_sessions(calendar_items, start_of_week, end_of_week)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
