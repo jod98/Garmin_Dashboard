@@ -11,6 +11,7 @@ sleep, steps, Body Battery) plus this week's planned running sessions;
 
 import sys
 import os
+import re
 import datetime as dt
 from datetime import date, timedelta
 import pandas as pd
@@ -470,9 +471,16 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             or item.get("activityId") is not None
         )
 
+        raw_title = (
+            item.get("title")
+            or item.get("workoutName")
+            or item.get("name")
+            or "Scheduled Run"
+        )
+
         sessions.append({
             "date": item_date,
-            "title": title,
+            "title": clean_title_case(raw_title),
             "is_completed": is_completed,
         })
 
@@ -750,6 +758,35 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.markdown(logs_html, unsafe_allow_html=True)
     else:
         st.caption("No activities recorded yet for this calendar week.")
+
+def clean_title_case(text):
+    """
+    Capitalizes major words in a workout title while preserving 
+    lowercase words like 'min/km', 'in', 'at', '@', etc.
+    """
+    if not text:
+        return text
+
+    # Words/patterns to keep strictly in lowercase
+    lowercase_exceptions = {
+        "min/km", "min/mi", "km", "mi", "m", "in", "at", "@", 
+        "per", "of", "to", "for", "a", "an", "the", "and"
+    }
+
+    # Split title while keeping whitespace and symbols intact
+    tokens = re.split(r'(\s+)', text)
+    cleaned_tokens = []
+
+    for token in tokens:
+        clean_token = token.strip().lower()
+        
+        if clean_token in lowercase_exceptions:
+            cleaned_tokens.append(token.lower())
+        else:
+            # Capitalize standard words (e.g. "easy" -> "Easy", "run" -> "Run")
+            cleaned_tokens.append(token.capitalize())
+
+    return "".join(cleaned_tokens)
 
 
 def render_planned_sessions(sessions, completed_dates=None):
