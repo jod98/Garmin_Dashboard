@@ -15,7 +15,6 @@ import datetime as dt
 from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
-import garmin_client
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
