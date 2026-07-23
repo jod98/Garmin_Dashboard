@@ -786,21 +786,81 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
         st.caption("No activities recorded yet for this calendar week.")
 
 
-def render_planned_sessions(planned_sessions):
+def render_planned_sessions(calendar_items, start_of_week, end_of_week):
     """
-    Renders this week's scheduled running sessions in a clean grid card layout.
+    Renders this week's planned running sessions directly from Garmin Connect's calendar or library.
+    Safely validates dictionary data types to prevent AttributeErrors.
     """
-    if not planned_sessions:
-        st.caption("No running sessions planned for this calendar week.")
+    if not calendar_items or not isinstance(calendar_items, list):
+        st.caption("No running sessions planned this calendar week.")
         return
 
-    planned_sessions.sort(key=lambda s: s["date"])
+    run_sessions = []
+    for item in calendar_items:
+        # Ensure item is a dictionary before calling .get()
+        if not isinstance(item, dict):
+            continue
+
+        # Extract sport type and item type safely
+        sport_info = item.get("sportType") or item.get("sportTypeKey") or item.get("itemType") or ""
+        if isinstance(sport_info, dict):
+            sport_type = str(sport_info.get("sportTypeKey") or sport_info.get("sportType") or "").lower()
+        else:
+            sport_type = str(sport_info).lower()
+
+        item_type = str(item.get("itemType") or "").lower()
+
+        # Check if this item is a run or running workout
+        if "run" in sport_type or "running" in sport_type or item_type in ["workout", "workoutscheduled"]:
+            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
+            if not date_str:
+                # If unscheduled from workout library, default to today
+                s_date = date.today()
+            else:
+                try:
+                    s_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    s_date = date.today()
+
+            if start_of_week <= s_date <= end_of_week:
+                duration_sec = (
+                    item.get("durationInSeconds") 
+                    or item.get("estimatedDurationInSecs") 
+                    or item.get("duration") 
+                    or 0
+                )
+                duration_min = round(duration_sec / 60) if duration_sec else None
+
+                title = (
+                    item.get("title") 
+                    or item.get("workoutName") 
+                    or item.get("name") 
+                    or "Planned Run"
+                )
+
+                run_sessions.append({
+                    "title": title,
+                    "date": s_date,
+                    "duration_min": duration_min,
+                })
+
+    if not run_sessions:
+        st.caption("No running sessions planned this calendar week.")
+        return
+
+    run_sessions.sort(key=lambda s: s["date"])
+
+    total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
+    card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
+    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+    st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
     logs_html = '<div class="activity-totals-grid">'
-    for s in planned_sessions:
+    for s in run_sessions:
         date_label = s["date"].strftime("%a, %b %d")
         title = s["title"]
-        duration_span = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
+        duration_min = s.get("duration_min")
+        duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
@@ -999,11 +1059,34 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-    # Planned Sessions Section (Direct from Garmin Connect Calendar)
+    # Planned Sessions Section (Direct from Garmin Connect API)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
     planned_sessions = fetch_planned_sessions_live(client, start_of_week, end_of_week)
-    render_planned_sessions(planned_sessions)
+
+    if not planned_sessions:
+        st.caption("No running sessions planned this calendar week.")
+    else:
+        planned_sessions.sort(key=lambda s: s["date"])
+        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
+
+        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
+        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
+        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
+
+        logs_html = '<div class="activity-totals-grid">'
+        for s in planned_sessions:
+            date_label = s["date"].strftime("%a, %b %d")
+            title = s["title"]
+            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
+            logs_html += (
+                f'<div class="activity-card">'
+                f'<div class="activity-date">{date_label}</div>'
+                f'<div class="activity-metrics"><strong>{title}</strong>{dur}</div>'
+                f'</div>'
+            )
+        logs_html += "</div>"
+        st.markdown(logs_html, unsafe_allow_html=True)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
