@@ -1024,16 +1024,12 @@ def main_page():
     snapshot_html = f'<div class="snapshot-grid">{c1}{c2}{c3}{c4}{c5}{c6}</div>'
     st.markdown(snapshot_html, unsafe_allow_html=True)
 
-    # Planned Sessions Section (from the AI Training Plan Coach)
+# Planned Sessions Section (Direct from Garmin Connect Calendar)
     st.markdown('<div class="section-title">This Week: Planned Sessions</div>', unsafe_allow_html=True)
 
-    try:
-        plan = db.get_plan(start_of_week)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load planned sessions: {exc}")
-        plan = None
+    calendar_items = fetch_planned_sessions_live(client, start_of_week, end_of_week)
 
-    render_planned_sessions(plan, start_of_week, end_of_week)
+    render_planned_sessions(calendar_items, start_of_week, end_of_week)
 
     # Sport Tabs & Progress Section
     st.markdown('<div class="section-title">This Week: Progress</div>', unsafe_allow_html=True)
