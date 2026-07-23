@@ -401,8 +401,8 @@ def fetch_max_metrics_with_lookback(_client):
             pass
     return {}
 
- @st.cache_data(ttl=900, show_spinner=False)
- def fetch_calendar_workouts(_client, start_date_str, end_date_str):
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_calendar_workouts(_client, start_date_str, end_date_str):
     """
     Fetches scheduled workouts/calendar items directly from Garmin Connect 
     for the specified date range.
