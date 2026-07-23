@@ -813,11 +813,6 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
 
     run_sessions.sort(key=lambda s: s["date"])
 
-    total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
-    card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
-    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
-    st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
-
     logs_html = '<div class="activity-totals-grid">'
     for s in run_sessions:
         date_label = s["date"].strftime("%a, %b %d")
@@ -1032,11 +1027,6 @@ def main_page():
         st.caption("No running sessions planned this calendar week.")
     else:
         planned_sessions.sort(key=lambda s: s["date"])
-        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
-
-        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
-        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
-        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
         logs_html = '<div class="activity-totals-grid">'
         for s in planned_sessions:
