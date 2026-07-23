@@ -246,6 +246,21 @@ def fetch_hrv(_client, date_str):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+def get_sync_timestamp():
+    """
+    Returns the timestamp of the most recent data fetch.
+
+    This is cached with the same 15-minute TTL as the data fetches below,
+    so it only advances when the underlying Garmin data is actually
+    re-pulled (or the user hits Refresh) - not on every page render/rerun.
+
+    Returns:
+        datetime: Time this cache entry was last (re)computed.
+    """
+    return dt.datetime.now()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_latest_sleep(_client):
     """
     Fetches sleep data strictly for last night.
@@ -495,6 +510,114 @@ def find_sleep_score(obj):
     return None
 
 
+def find_training_load(obj):
+    """
+    Recursively inspects nested structures to find a Training Load value.
+    Prefers an exact 'trainingLoad' key match before falling back to any
+    key containing 'trainingload' (e.g. acute/chronic load variants).
+
+    Args:
+        obj (dict | list): Training status payload structure.
+
+    Returns:
+        int/float or None: Extracted Training Load value if found, else None.
+    """
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if str(key).lower() == "trainingload" and isinstance(value, (int, float)):
+                return value
+
+        for key, value in obj.items():
+            if "trainingload" in str(key).lower() and isinstance(value, (int, float)):
+                return value
+            res = find_training_load(value)
+            if res is not None:
+                return res
+
+    elif isinstance(obj, list):
+        for item in obj:
+            res = find_training_load(item)
+            if res is not None:
+                return res
+
+    return None
+
+
+def interpret_hrv(hrv_payload, current_value):
+    """
+    Builds a short, human-readable read on a nightly HRV value.
+
+    Uses Garmin's own 'status' / baseline range from the HRV payload when
+    available (this is personalized to the user's own history), and falls
+    back to a simple comparison against the weekly average otherwise.
+
+    Args:
+        hrv_payload (dict): Raw HRV API payload.
+        current_value: The lastNightAvg value being displayed (int/float/str).
+
+    Returns:
+        str: Short descriptive label, or "" if nothing usable is available.
+    """
+    if not isinstance(hrv_payload, dict) or current_value in (None, "-"):
+        return ""
+
+    summary = hrv_payload.get("hrvSummary", {})
+    if not isinstance(summary, dict):
+        return ""
+
+    status = summary.get("status")
+    if status:
+        label_map = {
+            "BALANCED": "Balanced",
+            "UNBALANCED": "Unbalanced",
+            "LOW": "Low for you",
+            "POOR": "Poor",
+        }
+        label = label_map.get(str(status).upper(), str(status).title())
+        baseline = summary.get("baseline", {})
+        if isinstance(baseline, dict) and baseline.get("balancedLow") and baseline.get("balancedUpper"):
+            return f"{label} (your normal range: {baseline['balancedLow']}-{baseline['balancedUpper']}ms)"
+        return label
+
+    weekly_avg = summary.get("weeklyAvg")
+    try:
+        if weekly_avg and float(current_value) < float(weekly_avg) * 0.9:
+            return f"Below your recent avg ({weekly_avg}ms)"
+        if weekly_avg and float(current_value) > float(weekly_avg) * 1.1:
+            return f"Above your recent avg ({weekly_avg}ms)"
+        if weekly_avg:
+            return f"In line with your recent avg ({weekly_avg}ms)"
+    except (TypeError, ValueError):
+        pass
+
+    return ""
+
+
+def interpret_body_battery(current_value):
+    """
+    Bands a current Body Battery reading (0-100) into Garmin's published
+    zones so it's clear whether energy reserves are high or running low.
+
+    Args:
+        current_value: The current Body Battery level (int/float/str).
+
+    Returns:
+        str: Short descriptive label, or "" if the value isn't usable.
+    """
+    try:
+        value = float(current_value)
+    except (TypeError, ValueError):
+        return ""
+
+    if value >= 76:
+        return "High - well charged"
+    if value >= 51:
+        return "Good - solid reserves"
+    if value >= 26:
+        return "Low - consider easing up"
+    return "Very low - prioritize rest"
+
+
 def sport_tab(df, sport_key, start_of_week, end_of_week):
     """
     Renders the metric overview and logs within a specific activity tab.
@@ -699,24 +822,34 @@ if isinstance(training_status, dict):
         if isinstance(metrics_status, dict):
             load_val = metrics_status.get("trainingLoad", "-")
 
+# Fallback: Garmin's response shape shifts between accounts/devices, so if
+# the expected key path didn't resolve, fall back to a recursive search.
+if load_val == "-":
+    found_load = find_training_load(training_status)
+    if found_load is not None:
+        load_val = int(round(found_load)) if isinstance(found_load, float) else found_load
+
 
 # --------------------------------------------------------------------------
 # MAIN DASHBOARD UI LAYOUT
 # --------------------------------------------------------------------------
 st.title("Performance & Health Dashboard")
-st.caption(f"Last synchronized: {dt.datetime.now().strftime('%H:%M')}")
+st.caption(f"Last synchronized: {get_sync_timestamp().strftime('%H:%M')}")
 
 # Snapshot Metrics Grid
 st.markdown('<div class="section-title">Today\'s Snapshot</div>', unsafe_allow_html=True)
 
+hrv_note = interpret_hrv(hrv, hrv_val)
+bb_note = interpret_body_battery(bb_val)
+
 c1 = build_kpi_html("VO2 Max", f"{vo2_max_val}", status_label)
 c2 = build_kpi_html("Rest Heart Rate", f"{rhr} bpm" if rhr != "-" else "-", "")
-c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", "")
-c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", "")
+c3 = build_kpi_html("HRV (Night)", f"{hrv_val} ms" if hrv_val != "-" else "-", hrv_note)
+c4 = build_kpi_html("Body Battery", f"{bb_val}" if bb_val != "-" else "-", bb_note)
 c5 = build_kpi_html(
     "Sleep",
     sleep_string,
-    f"Score: {sleep_score} • {sleep_date_used}" if sleep_date_used != "-" else "No Data"
+    f"Score: {sleep_score}" if sleep_date_used != "-" else "No Data"
 )
 c6 = build_kpi_html("Training Load", f"{load_val}" if load_val != "-" else "-", "")
 
