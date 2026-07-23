@@ -419,15 +419,6 @@ def fetch_calendar_workouts(_client, year: int, month: int):
         return []   
 
 @st.cache_data(ttl=900, show_spinner=False)
-def get_live_planned_sessions(_client, start_date, end_date):
-    """
-    Cached Streamlit wrapper calling garmin_client to pull planned sessions.
-    """
-    return garmin_client.fetch_planned_sessions(_client, start_date, end_date)
-
-# Add this live calendar/workout fetching helper function directly in app.py:
-
-@st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
     Fetches planned running sessions directly from Garmin Connect.
