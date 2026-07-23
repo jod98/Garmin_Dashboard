@@ -796,9 +796,14 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
                 continue
 
             if start_of_week <= s_date <= end_of_week:
+                # Extract duration in minutes if present
+                duration_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
+                duration_min = round(duration_sec / 60) if duration_sec else None
+
                 run_sessions.append({
                     "title": item.get("title") or item.get("workoutName") or "Planned Run",
                     "date": s_date,
+                    "duration_min": duration_min,
                     "item_type": item.get("itemType", "").title()
                 })
 
@@ -812,9 +817,12 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
     for s in run_sessions:
         date_label = s["date"].strftime("%a, %b %d")
         title = s["title"]
+        duration_min = s.get("duration_min")
+        duration_span = f"<span>{duration_min} min</span>" if duration_min else ""
         logs_html += (
             f'<div class="activity-card">'
             f'<div class="activity-date">{date_label}</div>'
+            f'<div class="activity-metrics"><strong>{title}</strong>{duration_span}</div>'
             f'</div>'
         )
     logs_html += "</div>"
@@ -1024,6 +1032,7 @@ def main_page():
         for s in planned_sessions:
             date_label = s["date"].strftime("%a, %b %d")
             title = s["title"]
+            dur = f"<span>{s['duration_min']} min</span>" if s.get("duration_min") else ""
             logs_html += (
                 f'<div class="activity-card">'
                 f'<div class="activity-date">{date_label}</div>'
