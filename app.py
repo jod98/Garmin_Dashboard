@@ -421,82 +421,93 @@ def fetch_calendar_workouts(_client, year: int, month: int):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
-    Fetches planned running sessions directly from Garmin Connect.
-    Queries scheduled calendar entries for the week and checks the workout library.
+    Fetch planned running sessions directly from the Garmin Calendar.
+    Only scheduled workouts for the requested week are returned.
     """
+
     sessions = []
 
-    # ------------------------------------------------------------------
-    # 1. Fetch Calendar Items (Scheduled Workouts / Garmin Coach / Primary)
-    # ------------------------------------------------------------------
     try:
         cal_data = _client.get_calendar(start_date.year, start_date.month)
         items = cal_data.get("calendarItems", []) if isinstance(cal_data, dict) else (cal_data or [])
 
+        # Include next month if week spans two months
         if start_date.month != end_date.month:
             next_cal = _client.get_calendar(end_date.year, end_date.month)
             next_items = next_cal.get("calendarItems", []) if isinstance(next_cal, dict) else (next_cal or [])
             items.extend(next_items)
 
         for item in items:
+
             if not isinstance(item, dict):
                 continue
 
-            date_str = item.get("date") or item.get("startDateLocal", "")[:10]
+            # Ignore anything that isn't a running workout
+            sport = item.get("sportType") or item.get("sportTypeKey") or ""
+
+            if isinstance(sport, dict):
+                sport = (
+                    sport.get("sportTypeKey")
+                    or sport.get("sportType")
+                    or ""
+                )
+
+            sport = str(sport).lower()
+
+            if "run" not in sport and "running" not in sport:
+                continue
+
+            # Garmin uses different date fields depending on workout type
+            date_str = (
+                item.get("scheduledDate")
+                or item.get("scheduledDateLocal")
+                or item.get("date")
+                or item.get("eventDate")
+                or item.get("displayDate")
+                or item.get("startDateLocal")
+            )
+
             if not date_str:
                 continue
+
+            date_str = str(date_str)[:10]
+
             try:
-                item_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
+                item_date = dt.datetime.strptime(
+                    date_str,
+                    "%Y-%m-%d"
+                ).date()
+            except Exception:
                 continue
 
-            if start_date <= item_date <= end_date:
-                title = item.get("title") or item.get("workoutName") or "Scheduled Run"
-                dur_sec = item.get("durationInSeconds") or item.get("estimatedDurationInSecs") or 0
+            if not (start_date <= item_date <= end_date):
+                continue
 
-                sessions.append({
+            title = (
+                item.get("title")
+                or item.get("workoutName")
+                or item.get("name")
+                or "Running Workout"
+            )
+
+            duration_sec = (
+                item.get("durationInSeconds")
+                or item.get("estimatedDurationInSecs")
+                or 0
+            )
+
+            sessions.append(
+                {
                     "title": title,
                     "date": item_date,
-                    "duration_min": round(dur_sec / 60) if dur_sec else None,
-                })
-    except Exception:  # noqa: BLE001
+                    "duration_min": round(duration_sec / 60) if duration_sec else None,
+                }
+            )
+
+    except Exception:
         pass
 
-    # ------------------------------------------------------------------
-    # 2. Check Garmin Workout Library (Custom & Unscheduled Workouts)
-    # ------------------------------------------------------------------
-    try:
-        workouts = _client.get_workouts() or []
-        for w in workouts:
-            if not isinstance(w, dict):
-                continue
-            
-            # Robust extraction of sport key from various Garmin JSON schemas
-            sport_obj = w.get("sportType") or {}
-            sport_key = ""
-            if isinstance(sport_obj, dict):
-                sport_key = sport_obj.get("sportTypeKey") or sport_obj.get("sportType") or ""
-            else:
-                sport_key = str(sport_obj)
-            
-            if not sport_key:
-                sport_key = str(w.get("sportTypeKey") or "")
-
-            title = w.get("workoutName") or w.get("title") or "Running Workout"
-
-            # Match running workouts
-            if "run" in sport_key.lower() or "running" in sport_key.lower() or "tempo" in title.lower() or "run" in title.lower():
-                dur_sec = w.get("estimatedDurationInSecs") or w.get("durationInSeconds") or 0
-                
-                # Check if this workout is already listed from calendar
-                if not any(s["title"].lower() == title.lower() for s in sessions):
-                    sessions.append({
-                        "title": title,
-                        "date": date.today(),
-                        "duration_min": round(dur_sec / 60) if dur_sec else None,
-                    })
-    except Exception:  # noqa: BLE001
-        pass
+    sessions.sort(key=lambda x: x["date"])
 
     return sessions
 
@@ -837,9 +848,6 @@ def render_planned_sessions(calendar_items, start_of_week, end_of_week):
 
     run_sessions.sort(key=lambda s: s["date"])
 
-    total_planned_min = sum(s.get("duration_min") or 0 for s in run_sessions)
-    card1 = build_kpi_html("Planned Runs", str(len(run_sessions)), "")
-    card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
     st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
     logs_html = '<div class="activity-totals-grid">'
@@ -1055,11 +1063,6 @@ def main_page():
         st.caption("No running sessions planned this calendar week.")
     else:
         planned_sessions.sort(key=lambda s: s["date"])
-        total_planned_min = sum(s.get("duration_min") or 0 for s in planned_sessions)
-
-        card1 = build_kpi_html("Planned Runs", str(len(planned_sessions)), "")
-        card2 = build_kpi_html("Planned Time", f"{total_planned_min} min" if total_planned_min else "-", "")
-        st.markdown(f'<div class="activity-totals-grid">{card1}{card2}</div>', unsafe_allow_html=True)
 
         logs_html = '<div class="activity-totals-grid">'
         for s in planned_sessions:
