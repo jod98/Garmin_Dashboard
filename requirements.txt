@@ -1,5 +1,5 @@
 streamlit>=1.38
-garminconnect @ git+https://github.com/cyberjunky/python-garminconnect.git@master
+garminconnect==0.3.6
 garth>=0.4.44
 pandas>=2.2
 plotly>=5.22

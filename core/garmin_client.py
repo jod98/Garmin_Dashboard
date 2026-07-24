@@ -39,10 +39,24 @@ from garminconnect.workout import (
     create_warmup_step,
     create_cooldown_step,
     create_interval_step,
-    create_distance_interval_step,
     create_recovery_step,
     create_repeat_group,
 )
+
+# create_distance_interval_step isn't in the pinned stable release (0.3.6) -
+# it only exists on the library's unreleased master branch. Importing it
+# unconditionally is what broke this app twice already: once as a hard
+# ImportError, and once when floating the dependency at @master pulled in
+# unrelated breaking changes elsewhere. Import it defensively instead, and
+# fall back to a duration-based approximation (see _make_effort_step below)
+# whenever it isn't available, so a future stable release adding it "just
+# works" and its absence never takes the whole app down.
+try:
+    from garminconnect.workout import create_distance_interval_step
+    _HAS_DISTANCE_STEP = True
+except ImportError:
+    create_distance_interval_step = None
+    _HAS_DISTANCE_STEP = False
 
 # Where garth's persisted login session/token lives on disk. Override with the
 # GARMINTOKENS env var if you want it stored somewhere other than the default.
@@ -286,8 +300,18 @@ def _make_effort_step(step_order: int, step: dict):
     Returns:
         A single garminconnect workout step object.
     """
-    if step.get("distance_m"):
+    if step.get("distance_m") and _HAS_DISTANCE_STEP:
         built = create_distance_interval_step(step["distance_m"], step_order=step_order)
+    elif step.get("distance_m"):
+        # Installed garminconnect doesn't support a real distance end
+        # condition (see _HAS_DISTANCE_STEP above) - approximate with a
+        # duration-based step instead so the workout still uploads, using
+        # the step's own target pace if given (falls back to a generic
+        # 5:00/km guess otherwise). This step will end on a clock, not on
+        # actual GPS distance, until a stable release adds real support.
+        pace_sec_per_km = step.get("target_pace_sec_per_km", 300)
+        duration_sec = round((step["distance_m"] / 1000.0) * pace_sec_per_km)
+        built = create_interval_step(duration_sec, step_order=step_order)
     else:
         built = create_interval_step(step.get("duration_sec", 300), step_order=step_order)
 
