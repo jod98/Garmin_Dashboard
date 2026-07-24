@@ -101,7 +101,7 @@ if st.button("✨ Save Goals & Regenerate Full Block", use_container_width=True)
                 # Same delete-old-then-push-new swap as the quick adjustment
                 # above, so a full block regeneration can't leave duplicate
                 # workouts on the watch either.
-                new_sessions = sync_workouts(
+                new_sessions, push_errors = sync_workouts(
                     garmin_client,
                     old_sessions=existing_sessions,
                     new_sessions=new_sessions,
@@ -116,6 +116,8 @@ if st.button("✨ Save Goals & Regenerate Full Block", use_container_width=True)
                 )
 
                 st.success(f"✅ Goals saved! Training plan regenerated and synced {pushed_count} workouts to Garmin.")
+                if push_errors:
+                    st.warning("Some workouts failed to push to Garmin:\n\n" + "\n".join(f"- {e}" for e in push_errors))
                 st.rerun()
 
             except Exception as e:

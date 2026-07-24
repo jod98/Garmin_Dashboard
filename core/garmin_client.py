@@ -30,6 +30,7 @@ swap; every call site in this project should go through it rather than calling
 `push_workout` directly, so this behaviour stays consistent everywhere.
 """
 import os
+import traceback
 from datetime import date, timedelta
 
 import garminconnect
@@ -86,18 +87,34 @@ def get_client() -> garminconnect.Garmin:
     a fresh email/password login using GARMIN_EMAIL / GARMIN_PASSWORD env
     vars, which also (re)writes the token to TOKEN_DIR for next time.
     """
+    print(f"[garmin_client] get_client(): trying cached token at {TOKEN_DIR}")
     try:
         client = garminconnect.Garmin()
         client.login(TOKEN_DIR)
+        print("[garmin_client] get_client(): cached-token login succeeded")
         return client
-    except Exception:
+    except Exception as e:
         # No valid cached token - fall back to a full credential login.
-        client = garminconnect.Garmin(
-            email=os.environ["GARMIN_EMAIL"],
-            password=os.environ["GARMIN_PASSWORD"],
-        )
-        client.login(TOKEN_DIR)
-        return client
+        # Logging the real reason here (not just swallowing it) since a
+        # cached-token failure this app previously hid entirely is exactly
+        # the kind of thing that turns into a silent "0 workouts synced".
+        print(f"[garmin_client] get_client(): cached-token login failed ({type(e).__name__}: {e}), falling back to credential login")
+        print(traceback.format_exc())
+        try:
+            email = os.environ["GARMIN_EMAIL"]
+            password = os.environ["GARMIN_PASSWORD"]
+        except KeyError as missing:
+            print(f"[garmin_client] get_client(): missing required env var {missing} for credential login fallback")
+            raise
+        try:
+            client = garminconnect.Garmin(email=email, password=password)
+            client.login(TOKEN_DIR)
+            print("[garmin_client] get_client(): credential login succeeded, token re-saved")
+            return client
+        except Exception:
+            print("[garmin_client] get_client(): credential login FAILED")
+            print(traceback.format_exc())
+            raise
 
 
 def fetch_week_summary(client: garminconnect.Garmin, start: date, end: date) -> dict:
@@ -185,7 +202,7 @@ def fetch_week_summary(client: garminconnect.Garmin, start: date, end: date) -> 
 # that keeps this working even if your installed garminconnect version's
 # typed step constructors don't expose target kwargs. If a future
 # garminconnect release renames these fields, run:
-#   python -c "from garminconnect.workout import create_interval_step as f; print(f(1, 30).__class__.model_fields.keys())"
+#   python3 -c "from garminconnect.workout import create_interval_step as f; print(f(1, 30).__class__.model_fields.keys())"
 # to see the real field names and adjust _apply_pace_target() below to match.
 PACE_ALERT_TOLERANCE_SEC = 8  # +/- seconds-per-km band the watch alerts outside of
 
@@ -464,6 +481,16 @@ def push_workout(client: garminconnect.Garmin, session: dict, on_date: date) -> 
         raise ValueError(f"Sport '{sport}' has no structured Garmin workout mapping")
 
     _, WorkoutClass, sport_type = _SPORT_MAP[sport]
+
+    print(f"[garmin_client] push_workout(): building '{session.get('title')}' for {on_date.isoformat()}")
+    try:
+        steps = _build_steps(session)
+    except Exception:
+        print(f"[garmin_client] push_workout(): FAILED building steps for '{session.get('title')}'")
+        print(f"[garmin_client] push_workout(): session structure was: {session.get('structure')}")
+        print(traceback.format_exc())
+        raise
+
     workout = WorkoutClass(
         workoutName=session["title"],
         estimatedDurationInSecs=session.get("duration_min", 30) * 60,
@@ -471,13 +498,34 @@ def push_workout(client: garminconnect.Garmin, session: dict, on_date: date) -> 
             WorkoutSegment(
                 segmentOrder=1,
                 sportType=sport_type,
-                workoutSteps=_build_steps(session),
+                workoutSteps=steps,
             )
         ],
     )
+
     upload_fn = getattr(client, f"upload_{_SPORT_MAP[sport][0]}_workout")
-    result = upload_fn(workout)
-    client.schedule_workout(result["workoutId"], on_date.isoformat())
+    print(f"[garmin_client] push_workout(): calling {upload_fn.__name__}()")
+    try:
+        result = upload_fn(workout)
+    except Exception:
+        print(f"[garmin_client] push_workout(): upload FAILED for '{session.get('title')}'")
+        try:
+            print(f"[garmin_client] push_workout(): workout payload was: {workout.model_dump()}")
+        except Exception:
+            pass  # best-effort - don't let a logging failure mask the real error
+        print(traceback.format_exc())
+        raise
+    print(f"[garmin_client] push_workout(): upload succeeded, workoutId={result.get('workoutId')}")
+
+    print(f"[garmin_client] push_workout(): scheduling workoutId={result['workoutId']} for {on_date.isoformat()}")
+    try:
+        client.schedule_workout(result["workoutId"], on_date.isoformat())
+    except Exception:
+        print(f"[garmin_client] push_workout(): schedule_workout FAILED for workoutId={result['workoutId']}")
+        print(traceback.format_exc())
+        raise
+    print(f"[garmin_client] push_workout(): done, workoutId={result['workoutId']}")
+
     return result["workoutId"]
 
 
@@ -497,8 +545,10 @@ def remove_workout(client: garminconnect.Garmin, workout_id: str):
     """
     try:
         client.delete_workout(workout_id)
+        print(f"[garmin_client] remove_workout(): deleted workoutId={workout_id}")
     except Exception as e:
-        print(f"Could not remove workout {workout_id}: {e}")
+        print(f"[garmin_client] remove_workout(): could not remove workout {workout_id} ({type(e).__name__}: {e})")
+        print(traceback.format_exc())
 
 
 def sync_workouts(
@@ -548,10 +598,15 @@ def sync_workouts(
             started yet.
 
     Returns:
-        list: `new_sessions`, with "garmin_workout_id" filled in on whichever
-        sessions were successfully pushed. ALWAYS save this back to the
-        database (see db.save_plan) - it's how the next replan knows which
-        workout ids exist on the watch and need deleting.
+        tuple: (new_sessions, push_errors)
+        - new_sessions: `new_sessions`, with "garmin_workout_id" filled in on
+          whichever sessions were successfully pushed. ALWAYS save this back
+          to the database (see db.save_plan) - it's how the next replan
+          knows which workout ids exist on the watch and need deleting.
+        - push_errors: list of human-readable strings, one per session that
+          failed to push (empty list if everything succeeded). Show these
+          to the user - a push failure with no visible message is exactly
+          what silently produced "0 workouts synced" before.
     """
     # --- Step 1: clear out the old plan's future workouts first, so the
     # watch is never left showing both the old and new plan at once. ---
@@ -567,6 +622,7 @@ def sync_workouts(
             remove_workout(client, workout_id)
 
     # --- Step 2: push the new plan's future, runnable sessions. ---
+    push_errors = []
     for session in new_sessions:
         try:
             session_date = date.fromisoformat(session["date"])
@@ -578,6 +634,17 @@ def sync_workouts(
             try:
                 session["garmin_workout_id"] = push_workout(client, session, session_date)
             except Exception as e:
-                print(f"Could not push workout for {session['date']}: {e}")
+                print(f"[garmin_client] sync_workouts(): could not push workout for {session['date']} ({type(e).__name__}: {e})")
+                print(traceback.format_exc())
+                push_errors.append(f"{session['date']} ({session.get('title', 'workout')}): {type(e).__name__}: {e}")
 
-    return new_sessions
+    if push_errors:
+        # Surfaced on new_sessions so callers (e.g. the Streamlit pages) can
+        # show it via st.warning/st.error - a print() alone is invisible on
+        # the deployed page and this exact failure mode is what silently
+        # produced "0 workouts synced" with no visible error before.
+        new_sessions_push_errors = push_errors
+    else:
+        new_sessions_push_errors = []
+
+    return new_sessions, new_sessions_push_errors
