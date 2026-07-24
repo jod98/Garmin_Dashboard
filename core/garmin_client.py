@@ -206,13 +206,70 @@ def _apply_pace_target(step, target_sec_per_km, tolerance_sec: int = PACE_ALERT_
     return step
 
 
+def _apply_hr_zone_target(step, zone_number: int):
+    """
+    Attaches a heart-rate-zone alert to a step (e.g. "Zone 2" on an easy
+    run or the steady portion of a progressive long run) - the watch alerts
+    when your HR drifts outside the given zone, the same way it alerts on
+    pace for a pace.zone target.
+
+    Garmin's schema for a heart-rate-zone target is DIFFERENT from a pace
+    target: it's workoutTargetTypeId 4 ("heart.rate.zone") with a plain
+    `zoneNumber` field (1-5, matching the athlete's configured HR zones),
+    not a targetValueOne/targetValueTwo speed band - so this can't reuse
+    _apply_pace_target()'s logic even though the two look similar.
+
+    Args:
+        step: A step object returned by one of the create_*_step() helpers.
+        zone_number: Garmin HR zone, 1 (easiest) to 5 (hardest).
+
+    Returns:
+        The same step object, mutated in place, for convenient chaining.
+    """
+    step.targetType = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone"}
+    step.zoneNumber = zone_number
+    return step
+
+
+def _apply_target(step, step_dict: dict):
+    """
+    Attaches whichever target a structure step specifies - a pace-zone
+    alert (`target_pace_sec_per_km`) or a heart-rate-zone alert
+    (`target_hr_zone`, 1-5) - or leaves the step untargeted if `step_dict`
+    specifies neither (e.g. a plain warmup, or unpaced strides).
+
+    Centralizing this "which target key is present" check here means
+    warmup/run/interval/recovery steps all pick up either target kind the
+    same way, instead of duplicating the pace-vs-HR-zone branching at every
+    call site.
+
+    Args:
+        step: A step object returned by one of the create_*_step() helpers.
+        step_dict: The structure dict this step was built from - may
+            contain "target_pace_sec_per_km" and/or "target_hr_zone"
+            (for a recovery step, the "recovery_" prefixed equivalents are
+            expected to already be renamed onto these same keys by the
+            caller - see _make_recovery_step()).
+
+    Returns:
+        The same step object, mutated in place, for convenient chaining.
+    """
+    if step_dict.get("target_pace_sec_per_km"):
+        _apply_pace_target(step, step_dict["target_pace_sec_per_km"])
+    elif step_dict.get("target_hr_zone"):
+        _apply_hr_zone_target(step, step_dict["target_hr_zone"])
+    return step
+
+
 def _make_effort_step(step_order: int, step: dict):
     """
     Builds one "doing the work" step - either a steady-state "run" step or a
     single hard-effort rep inside an interval's repeat group - as DISTANCE-
     based when `distance_m` is given (preferred whenever the plan specifies
-    reps/distance in meters), or DURATION-based otherwise, with a pace-zone
-    alert attached if `target_pace_sec_per_km` is present.
+    reps/distance in meters), or DURATION-based otherwise, with whichever
+    alert the step specifies attached: a pace-zone alert
+    (`target_pace_sec_per_km`) or a heart-rate-zone alert (`target_hr_zone`,
+    e.g. "Zone 2" on an easy/steady segment).
 
     Distance-based is what makes "4 x 800m" actually end on 800m of real GPS
     distance and prompt the "lap complete, rest" screen right then - a
@@ -223,8 +280,8 @@ def _make_effort_step(step_order: int, step: dict):
     Args:
         step_order: Position of this step within its segment/repeat group.
         step: The structure dict (see plan_generator.py's SYSTEM_PROMPT for
-            the exact shape) - reads "distance_m", "duration_sec", and
-            "target_pace_sec_per_km".
+            the exact shape) - reads "distance_m", "duration_sec",
+            "target_pace_sec_per_km", and "target_hr_zone".
 
     Returns:
         A single garminconnect workout step object.
@@ -234,8 +291,7 @@ def _make_effort_step(step_order: int, step: dict):
     else:
         built = create_interval_step(step_order, step.get("duration_sec", 300))
 
-    if step.get("target_pace_sec_per_km"):
-        _apply_pace_target(built, step["target_pace_sec_per_km"])
+    _apply_target(built, step)
 
     return built
 
@@ -252,8 +308,10 @@ def _make_recovery_step(step_order: int, step: dict):
     Args:
         step_order: Position of this step within its repeat group.
         step: The parent interval's structure dict - reads "recovery_sec"
-            (seconds of rest) and, if given, an optional
-            "recovery_target_pace_sec_per_km" for a jog-paced recovery.
+            (seconds of rest) and, if given, an optional jog/walk target:
+            "recovery_target_pace_sec_per_km" or "recovery_target_hr_zone".
+            Most recoveries (a jog, a walk between strides) carry neither -
+            that's expected and fine, they're left untargeted.
 
     Returns:
         A single garminconnect recovery-step object.
@@ -262,6 +320,8 @@ def _make_recovery_step(step_order: int, step: dict):
 
     if step.get("recovery_target_pace_sec_per_km"):
         _apply_pace_target(built, step["recovery_target_pace_sec_per_km"])
+    elif step.get("recovery_target_hr_zone"):
+        _apply_hr_zone_target(built, step["recovery_target_hr_zone"])
 
     return built
 
@@ -278,10 +338,15 @@ def _build_steps(session: dict):
     `session["structure"]` is a list shaped like (see plan_generator.py's
     SYSTEM_PROMPT for the authoritative field list):
       [{"type": "warmup", "duration_sec": 600},
-       {"type": "run", "distance_m": 8000, "target_pace_sec_per_km": 285},
+       {"type": "run", "distance_m": 7000, "target_hr_zone": 2},
+       {"type": "run", "distance_m": 2000, "target_pace_sec_per_km": 335},
        {"type": "interval", "distance_m": 800, "reps": 4,
         "target_pace_sec_per_km": 315, "recovery_sec": 120},
        {"type": "cooldown", "duration_sec": 600}]
+    The two consecutive "run" entries above are how a progressive long run
+    (e.g. "7km @ Zone 2, then 2km @ 5:35/km") is expressed - each is just its
+    own sequential step, not wrapped in a repeat group, so they play back
+    back-to-back in the order given rather than alternating/repeating.
     Kept intentionally simple - the plan generator's system prompt is written
     to only ever produce these shapes, so this function doesn't need to
     handle arbitrary/nested structures.
@@ -302,8 +367,7 @@ def _build_steps(session: dict):
 
         if step_type == "warmup":
             built = create_warmup_step(step_order, step["duration_sec"])
-            if step.get("target_pace_sec_per_km"):
-                _apply_pace_target(built, step["target_pace_sec_per_km"])
+            _apply_target(built, step)
             steps.append(built)
             step_order += 1
 
