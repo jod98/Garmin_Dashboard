@@ -1,3 +1,14 @@
+"""
+"Weekly Check-In" page: a short subjective feedback form (energy, soreness,
+injury, missed sessions, notes) for the week that just finished. Submitted
+feedback is saved via core.db.save_feedback() and picked up as context the
+next time a plan is generated (see core/plan_generator.py), so an injury
+flagged here can influence next week's plan even before any explicit
+mid-week adjustment is made on the Current Plan page.
+
+The form only unlocks after Sunday 6pm each week, so the AI coach reviews a
+(mostly) complete week before the next one is planned.
+"""
 import sys
 import os
 from datetime import date, datetime, timedelta
@@ -9,7 +20,10 @@ from core import db  # noqa: E402
 
 st.title("Weekly Check-In")
 
-# The check-in email links here as ...?week=2026-07-20
+# Optional: this page reads a `?week=2026-07-20` query param so you can link
+# directly to a specific week's check-in if you ever want to (e.g. to review
+# a week you skipped). There's no automated email that sends this link -
+# plans are only ever generated when you ask for one on the Current Plan page.
 week_param = st.query_params.get("week")
 try:
     week_start = (
@@ -34,12 +48,12 @@ st.info(
 You're reviewing your training completed between **Monday {week_start.strftime('%d %B %Y')}**
 and **Sunday {week_end.strftime('%d %B %Y')}**.
 
-Your feedback is used to personalise your next week's training.
+Your feedback is used to personalise your next training plan.
 
 - ✅ If everything went well, your progression will continue as planned.
-- ⚠️ If you experienced fatigue, illness, injury, or missed sessions, your upcoming plan will be adjusted accordingly.
+- ⚠️ If you experienced fatigue, illness, injury, or missed sessions, your next plan will be adjusted accordingly.
 
-Once submitted, your new training plan will automatically be generated and synced to your Garmin watch.
+This doesn't generate anything by itself - it's just saved so it's available as context the next time you ask for a new or adjusted plan on the **Current Plan** page.
 """
 )
 
@@ -53,7 +67,7 @@ Your next check-in opens on:
 
 **{unlock_time.strftime('%A %d %B %Y at %I:%M %p')}**
 
-This allows your AI coach to review the completed training week before generating your next week's plan.
+This allows your AI coach to review the completed training week before you generate your next plan.
 """
     )
     st.stop()

@@ -11,10 +11,15 @@ pages, shown in the left-hand sidebar:
   week's scheduled running workouts from the AI coach.
 - **Current Plan** — set/update your training goals and constraints, make a
   quick mid-week adjustment (injury, time off, etc.), and regenerate your
-  plan. Regenerating pushes structured workouts straight to your Garmin
-  Connect calendar.
+  plan. There's no automated/scheduled plan generation - a plan is only ever
+  created or changed when you do one of these two things yourself. Either
+  way, regenerating deletes any of that plan's still-upcoming workouts from
+  your Garmin Connect calendar first, then pushes the new ones - so you
+  never end up with an old and new plan both sitting on your watch at once.
 - **Weekly Check-In** — a short weekly form (energy, soreness, injury,
-  missed sessions, notes) that feeds into next week's generated plan.
+  missed sessions, notes). It doesn't trigger anything by itself - it's
+  just saved so it's available as context the next time you ask for a plan
+  on the Current Plan page.
 
 Live Garmin data comes from the [`garminconnect`](https://github.com/cyberjunky/python-garminconnect)
 library. Plans/feedback/goals are stored in a Postgres database (a free
@@ -62,21 +67,7 @@ entered directly in Streamlit Cloud's UI (step 3 below).
    too. All three pages (This Week, Current Plan, Weekly Check-In) live in
    this one app/URL.
 
-## 4. Optional: automated weekly emails
-
-`.github/workflows/weekly_plan.yml` and `scripts/send_weekly_plan.py` can run
-the plan generation on a schedule (e.g. Sunday nights) instead of you opening
-**Current Plan** manually each week, and email you the result. This needs the
-same secrets as above added as **GitHub repository secrets** too
-(Settings → Secrets and variables → Actions), plus `GMAIL_ADDRESS`,
-`GMAIL_APP_PASSWORD`, and `RECIPIENT_EMAIL` for sending the email. Note: the
-email-sending module (`core/email_sender.py`) referenced by that script
-wasn't part of the files used to build this app — add it (or point the
-script at whatever email method you prefer) before relying on that workflow.
-The Streamlit pages (This Week / Current Plan / Weekly Check-In) work fully
-without it.
-
-## 5. Important things to know
+## 4. Important things to know
 
 - **Login frequency / account safety**: Garmin doesn't publish an official
   personal API, so this uses the same login flow as the Garmin Connect app.
@@ -97,7 +88,7 @@ without it.
   sessions in the plan aren't shown there, since that section is scoped to
   running workouts specifically).
 
-## 6. Local testing (optional, before deploying)
+## 5. Local testing (optional, before deploying)
 
 ```bash
 pip install -r requirements.txt

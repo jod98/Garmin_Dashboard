@@ -11,7 +11,6 @@ sleep, steps, Body Battery) plus this week's planned running sessions;
 
 import sys
 import os
-import re
 import datetime as dt
 from datetime import date, timedelta
 import pandas as pd
@@ -406,7 +405,18 @@ def fetch_max_metrics_with_lookback(_client):
 def fetch_planned_sessions_live(_client, start_date, end_date):
     """
     Fetches scheduled running workouts directly from Garmin Connect's calendar
-    and extracts completion status.
+    (rather than from our own database) and extracts each one's completion
+    status, so the dashboard reflects the live state of the watch/calendar
+    even if it drifts from what's saved locally.
+
+    Args:
+        _client (Garmin): Authenticated Garmin API client.
+        start_date (datetime.date): First day of the window to display.
+        end_date (datetime.date): Last day of the window to display (inclusive).
+
+    Returns:
+        list[dict]: Sessions sorted by date, each shaped like
+            {"date": date, "title": str, "is_completed": bool}.
     """
     months_to_fetch = {(start_date.year, start_date.month), (end_date.year, end_date.month)}
     items = []
@@ -471,16 +481,9 @@ def fetch_planned_sessions_live(_client, start_date, end_date):
             or item.get("activityId") is not None
         )
 
-        raw_title = (
-            item.get("title")
-            or item.get("workoutName")
-            or item.get("name")
-            or "Scheduled Run"
-        )
-
         sessions.append({
             "date": item_date,
-            "title": clean_title_case(raw_title),
+            "title": title,
             "is_completed": is_completed,
         })
 
@@ -759,35 +762,6 @@ def sport_tab(df, sport_key, start_of_week, end_of_week):
     else:
         st.caption("No activities recorded yet for this calendar week.")
 
-def clean_title_case(text):
-    """
-    Capitalizes major words in a workout title while preserving 
-    lowercase words like 'min/km', 'in', 'at', '@', etc.
-    """
-    if not text:
-        return text
-
-    # Words/patterns to keep strictly in lowercase
-    lowercase_exceptions = {
-        "min/km", "min/mi", "km", "mi", "m", "in", "at", "@", 
-        "per", "of", "to", "for", "a", "an", "the", "and"
-    }
-
-    # Split title while keeping whitespace and symbols intact
-    tokens = re.split(r'(\s+)', text)
-    cleaned_tokens = []
-
-    for token in tokens:
-        clean_token = token.strip().lower()
-        
-        if clean_token in lowercase_exceptions:
-            cleaned_tokens.append(token.lower())
-        else:
-            # Capitalize standard words (e.g. "easy" -> "Easy", "run" -> "Run")
-            cleaned_tokens.append(token.capitalize())
-
-    return "".join(cleaned_tokens)
-
 
 def render_planned_sessions(sessions, completed_dates=None):
     """
@@ -795,6 +769,13 @@ def render_planned_sessions(sessions, completed_dates=None):
     - Green Tick (✓) for completed workouts
     - Red Cross (✗) for missed past workouts
     - Hourglass (⏳) for upcoming workouts
+
+    Args:
+        sessions (list[dict]): Output of fetch_planned_sessions_live().
+        completed_dates (set[datetime.date] | None): Dates that have a
+            recorded activity (from the activities dataframe), used as a
+            second signal alongside each session's own "is_completed" flag -
+            in case Garmin's calendar item wasn't itself marked complete.
     """
     if not sessions:
         st.caption("No running sessions planned this calendar week.")

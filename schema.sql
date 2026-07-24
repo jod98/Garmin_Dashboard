@@ -3,9 +3,11 @@
 create table if not exists weekly_plans (
     id serial primary key,
     week_start date not null unique,
-    sessions jsonb not null,        -- list of session objects, see plan_generator.py
+    sessions jsonb not null,        -- list of session objects (see plan_generator.py for
+                                     -- the shape); each session may carry a
+                                     -- "garmin_workout_id" once pushed to Garmin Connect
+                                     -- (see garmin_client.sync_workouts)
     rationale text,                 -- short explanation the AI gave for this week's plan
-    garmin_pushed boolean default false,
     created_at timestamptz default now()
 );
 

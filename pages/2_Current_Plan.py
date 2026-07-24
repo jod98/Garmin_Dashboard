@@ -1,3 +1,19 @@
+"""
+"Current Plan" page: lets the athlete set/update their overall goals, make a
+quick mid-week adjustment (injury, time off, etc.), and see the resulting
+plan synced to Garmin Connect.
+
+Both actions on this page follow the same pattern:
+  1. Load the week's EXISTING sessions from the database (so we know what's
+     currently pushed to Garmin, including each session's "garmin_workout_id").
+  2. Ask the plan generator for a new set of sessions.
+  3. Call garmin_client.sync_workouts(), which deletes the old plan's future
+     workouts from the Garmin calendar and pushes the new plan's - this is
+     what stops you ending up with both an old (e.g. pre-injury) and new
+     plan sitting on your watch's calendar at once.
+  4. Save the result (now including fresh "garmin_workout_id" values) back
+     to the database, so the NEXT replan can clean these up in turn.
+"""
 import sys
 import os
 from datetime import date, timedelta
@@ -7,7 +23,7 @@ import streamlit as st
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from core import db  # noqa: E402
 from core.plan_generator import generate_week_plan, regenerate_partial_week, format_goal_aesthetically
-from core.garmin_client import get_client, fetch_week_summary, push_workout
+from core.garmin_client import get_client, fetch_week_summary, sync_workouts
 
 st.title("📋 Current Plan & Adjustments")
 
@@ -17,6 +33,7 @@ saved_raw_notes = current.get("goal_text") or current.get("goal") or ""
 saved_formatted_summary = current.get("constraints_text") or current.get("constraints") or ""
 
 def most_recent_monday(d: date) -> date:
+    """Returns the Monday on or before `d` - our convention for a week's `week_start`."""
     return d - timedelta(days=d.weekday())
 
 week_start = most_recent_monday(date.today())
@@ -67,6 +84,9 @@ if btn_adjust:
     else:
         with st.spinner("Adjusting your current week and syncing to Garmin..."):
             try:
+                # Load what's currently saved/pushed for this week BEFORE we
+                # overwrite it - sync_workouts needs this to know which
+                # Garmin workout ids to delete.
                 existing_plan = db.get_plan(week_start) or {}
                 existing_sessions = existing_plan.get("sessions", [])
 
@@ -78,24 +98,30 @@ if btn_adjust:
                     affected_end=affected_end.isoformat(),
                     notes=adj_notes
                 )
+                new_sessions = adjusted_data.get("sessions", [])
 
+                # Swap the Garmin calendar over to the new plan: delete the
+                # old plan's still-upcoming workouts, then push the new
+                # plan's. Only today-onward is touched, so days that have
+                # already happened this week are left alone. This stamps
+                # "garmin_workout_id" onto each newly pushed session.
+                garmin_client = get_client()
+                new_sessions = sync_workouts(
+                    garmin_client,
+                    old_sessions=existing_sessions,
+                    new_sessions=new_sessions,
+                    from_date=date.today(),
+                )
+                pushed_count = sum(1 for s in new_sessions if s.get("garmin_workout_id"))
+
+                # Save AFTER syncing, so the freshly-stamped garmin_workout_id
+                # values are what gets persisted - without this ordering,
+                # the next replan wouldn't know which workouts to delete.
                 db.save_plan(
                     week_start,
-                    adjusted_data.get("sessions", []),
+                    new_sessions,
                     adjusted_data.get("rationale", "")
                 )
-
-                # Sync updated sessions to Garmin
-                garmin_client = get_client()
-                pushed_count = 0
-                for session in adjusted_data.get("sessions", []):
-                    s_date = date.fromisoformat(session["date"])
-                    if session.get("sport") == "run" and session.get("structure"):
-                        try:
-                            push_workout(garmin_client, session, s_date)
-                            pushed_count += 1
-                        except Exception:
-                            pass
 
                 st.success(f"✅ Current week updated! Synced {pushed_count} workouts to Garmin.")
                 st.rerun()
@@ -132,6 +158,12 @@ if st.button("✨ Save Goals & Regenerate Full Block", use_container_width=True)
                     formatted_summary
                 )
 
+                # Load what's currently saved/pushed for this week BEFORE we
+                # overwrite it - same reason as the quick-adjustment flow
+                # above: sync_workouts needs the old plan's workout ids.
+                existing_plan = db.get_plan(week_start) or {}
+                existing_sessions = existing_plan.get("sessions", [])
+
                 updated_profile = db.get_athlete_profile() or {}
                 garmin_client = get_client()
                 recent_summary = fetch_week_summary(garmin_client, week_start - timedelta(days=14), week_start)
@@ -145,22 +177,24 @@ if st.button("✨ Save Goals & Regenerate Full Block", use_container_width=True)
                     recent_feedback=[f for f in recent_feedback if f],
                     garmin_summary=recent_summary
                 )
+                new_sessions = plan_data.get("sessions", [])
+
+                # Same delete-old-then-push-new swap as the quick adjustment
+                # above, so a full block regeneration can't leave duplicate
+                # workouts on the watch either.
+                new_sessions = sync_workouts(
+                    garmin_client,
+                    old_sessions=existing_sessions,
+                    new_sessions=new_sessions,
+                    from_date=date.today(),
+                )
+                pushed_count = sum(1 for s in new_sessions if s.get("garmin_workout_id"))
 
                 db.save_plan(
-                    week_start, 
-                    plan_data.get("sessions", []), 
+                    week_start,
+                    new_sessions,
                     plan_data.get("rationale", "")
                 )
-
-                pushed_count = 0
-                for session in plan_data.get("sessions", []):
-                    s_date = date.fromisoformat(session["date"])
-                    if session.get("sport") == "run" and session.get("structure"):
-                        try:
-                            push_workout(garmin_client, session, s_date)
-                            pushed_count += 1
-                        except Exception:
-                            pass
 
                 st.success(f"✅ Goals saved! Training plan regenerated and synced {pushed_count} workouts to Garmin.")
                 st.rerun()
