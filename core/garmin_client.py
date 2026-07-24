@@ -7,6 +7,13 @@ Handles two directions of data flow:
      plan generator has real data to reason about fatigue/load.
   2. WRITING structured workouts onto your Garmin Connect calendar, which
      Garmin then syncs down to your watch so you can follow/track them live.
+     "Structured" here means real distance/duration end conditions plus
+     pace-zone alert targets on each step (see _build_steps() and
+     _apply_pace_target() below) - not just a calendar entry with a
+     descriptive title. That's what makes the watch itself beep "too fast"
+     / "too slow" mid-rep, and prompt "recovery" with a lap-complete screen
+     the moment a distance-based interval (e.g. one 800m rep) is actually
+     covered, rather than just timing out on a guessed duration.
 
 Auth note: garminconnect uses the `garth` library under the hood, which persists
 a long-lived (~1 year) session token to disk after your first login, so you are
@@ -32,6 +39,8 @@ from garminconnect.workout import (
     create_warmup_step,
     create_cooldown_step,
     create_interval_step,
+    create_distance_interval_step,
+    create_recovery_step,
     create_repeat_group,
 )
 
@@ -137,14 +146,141 @@ def fetch_week_summary(client: garminconnect.Garmin, start: date, end: date) -> 
     return summary
 
 
+# --------------------------------------------------------------------------
+# PACE-ZONE TARGETS - what makes the watch beep "too fast" / "too slow"
+# --------------------------------------------------------------------------
+# A plain workout step (just a duration/distance) only ever gets you a step
+# that runs then ends - the watch has no idea what pace you're supposed to
+# be holding, so it can't alert you either way. To get real on-watch pace
+# accountability, each step needs a "target" attached telling Garmin what
+# speed band counts as on-pace.
+#
+# Garmin's underlying schema stores a pace target as a SPEED RANGE in
+# metres/second (not a pace string) on the step's targetType, with
+# workoutTargetTypeId == 6 identifying "pace.zone" - this is Garmin Connect's
+# own canonical mapping, independent of whichever Python wrapper built the
+# step. targetValueOne is the LOW speed bound and targetValueTwo is the HIGH
+# speed bound (remember: a SLOWER pace is a LOWER speed, so the "low" bound
+# is your slow-side tolerance and the "high" bound is your fast-side
+# tolerance) - the watch alerts whenever your live pace falls outside that
+# window during the step.
+#
+# Implementation note: this sets targetType/targetValueOne/targetValueTwo
+# directly on whatever step object the create_*_step() helpers return,
+# rather than assuming those helpers accept a `target=` keyword argument -
+# that keeps this working even if your installed garminconnect version's
+# typed step constructors don't expose target kwargs. If a future
+# garminconnect release renames these fields, run:
+#   python -c "from garminconnect.workout import create_interval_step as f; print(f(1, 30).__class__.model_fields.keys())"
+# to see the real field names and adjust _apply_pace_target() below to match.
+PACE_ALERT_TOLERANCE_SEC = 8  # +/- seconds-per-km band the watch alerts outside of
+
+
+def _pace_sec_per_km_to_mps(sec_per_km: float) -> float:
+    """Converts a pace in seconds-per-kilometer into a speed in metres/second."""
+    return 1000.0 / sec_per_km
+
+
+def _apply_pace_target(step, target_sec_per_km, tolerance_sec: int = PACE_ALERT_TOLERANCE_SEC):
+    """
+    Attaches a pace-zone alert band to a single workout step, so the watch
+    beeps and shows an on-screen "too fast" / "too slow" prompt if your pace
+    drifts outside [target - tolerance, target + tolerance] seconds/km
+    during that step.
+
+    Args:
+        step: A step object returned by one of the create_*_step() helpers.
+        target_sec_per_km: Target pace in total seconds per kilometer
+            (e.g. 5:15/km -> 315).
+        tolerance_sec: How many seconds/km either side of the target still
+            counts as "on pace" before the watch alerts.
+
+    Returns:
+        The same step object, mutated in place, for convenient chaining.
+    """
+    slow_bound_sec_per_km = target_sec_per_km + tolerance_sec
+    fast_bound_sec_per_km = target_sec_per_km - tolerance_sec
+    step.targetType = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone"}
+    step.targetValueOne = _pace_sec_per_km_to_mps(slow_bound_sec_per_km)  # low speed = slow end
+    step.targetValueTwo = _pace_sec_per_km_to_mps(fast_bound_sec_per_km)  # high speed = fast end
+    return step
+
+
+def _make_effort_step(step_order: int, step: dict):
+    """
+    Builds one "doing the work" step - either a steady-state "run" step or a
+    single hard-effort rep inside an interval's repeat group - as DISTANCE-
+    based when `distance_m` is given (preferred whenever the plan specifies
+    reps/distance in meters), or DURATION-based otherwise, with a pace-zone
+    alert attached if `target_pace_sec_per_km` is present.
+
+    Distance-based is what makes "4 x 800m" actually end on 800m of real GPS
+    distance and prompt the "lap complete, rest" screen right then - a
+    duration-based step (a guessed number of seconds from a target pace)
+    only ends on a clock, so it finishes short or long of 800m whenever your
+    actual pace differs even slightly from the plan's estimate.
+
+    Args:
+        step_order: Position of this step within its segment/repeat group.
+        step: The structure dict (see plan_generator.py's SYSTEM_PROMPT for
+            the exact shape) - reads "distance_m", "duration_sec", and
+            "target_pace_sec_per_km".
+
+    Returns:
+        A single garminconnect workout step object.
+    """
+    if step.get("distance_m"):
+        built = create_distance_interval_step(step["distance_m"], step_order=step_order)
+    else:
+        built = create_interval_step(step_order, step.get("duration_sec", 300))
+
+    if step.get("target_pace_sec_per_km"):
+        _apply_pace_target(built, step["target_pace_sec_per_km"])
+
+    return built
+
+
+def _make_recovery_step(step_order: int, step: dict):
+    """
+    Builds the REST step that follows each hard rep inside an interval's
+    repeat group, using Garmin's dedicated RECOVERY step type rather than
+    reusing a second generic interval step. This is what makes the watch
+    itself label and announce that portion as rest (not just another hard
+    effort) and is what drives the "recovery - get ready for the next rep"
+    prompt and countdown between reps.
+
+    Args:
+        step_order: Position of this step within its repeat group.
+        step: The parent interval's structure dict - reads "recovery_sec"
+            (seconds of rest) and, if given, an optional
+            "recovery_target_pace_sec_per_km" for a jog-paced recovery.
+
+    Returns:
+        A single garminconnect recovery-step object.
+    """
+    built = create_recovery_step(step_order, step.get("recovery_sec", 90))
+
+    if step.get("recovery_target_pace_sec_per_km"):
+        _apply_pace_target(built, step["recovery_target_pace_sec_per_km"])
+
+    return built
+
+
 def _build_steps(session: dict):
     """
-    Translates a plan session's simple `structure` list into the list of
-    garminconnect WorkoutStep objects a RunningWorkout needs.
+    Translates a plan session's `structure` list into the list of
+    garminconnect WorkoutStep/repeat-group objects a RunningWorkout needs -
+    including, for each step, a real distance- or duration-based end
+    condition and (whenever the plan gave one) a pace-zone alert, so the
+    resulting Garmin workout can actually hold you accountable to distance
+    and pace on the watch, not just record a plain unstructured activity.
 
-    `session["structure"]` is a simple list like:
+    `session["structure"]` is a list shaped like (see plan_generator.py's
+    SYSTEM_PROMPT for the authoritative field list):
       [{"type": "warmup", "duration_sec": 600},
-       {"type": "interval", "duration_sec": 240, "reps": 6, "recovery_sec": 90},
+       {"type": "run", "distance_m": 8000, "target_pace_sec_per_km": 285},
+       {"type": "interval", "distance_m": 800, "reps": 4,
+        "target_pace_sec_per_km": 315, "recovery_sec": 120},
        {"type": "cooldown", "duration_sec": 600}]
     Kept intentionally simple - the plan generator's system prompt is written
     to only ever produce these shapes, so this function doesn't need to
@@ -162,27 +298,41 @@ def _build_steps(session: dict):
     steps = []
     step_order = 1
     for step in session.get("structure", []):
-        if step["type"] == "warmup":
-            steps.append(create_warmup_step(step_order, step["duration_sec"]))
+        step_type = step.get("type")
+
+        if step_type == "warmup":
+            built = create_warmup_step(step_order, step["duration_sec"])
+            if step.get("target_pace_sec_per_km"):
+                _apply_pace_target(built, step["target_pace_sec_per_km"])
+            steps.append(built)
             step_order += 1
-        elif step["type"] == "cooldown":
+
+        elif step_type == "cooldown":
             steps.append(create_cooldown_step(step_order, step["duration_sec"]))
             step_order += 1
-        elif step["type"] == "interval":
+
+        elif step_type == "run":
+            # Steady-state main effort with no reps (easy/tempo/long run) -
+            # same distance-preferred + pace-target treatment as a single
+            # interval rep, just not wrapped in a repeat group.
+            steps.append(_make_effort_step(step_order, step))
+            step_order += 1
+
+        elif step_type == "interval":
             reps = step.get("reps", 1)
-            # One "repeat group" = the hard interval, optionally followed by
-            # its recovery, repeated `reps` times (e.g. 6x [4min hard, 90s easy]).
-            group_steps = [create_interval_step(1, step["duration_sec"])]
+            # One "repeat group" = the hard rep, optionally followed by its
+            # recovery, repeated `reps` times (e.g. 4x [800m hard, 2min easy]).
+            group_steps = [_make_effort_step(1, step)]
 
             if step.get("recovery_sec"):
-                group_steps.append(create_interval_step(2, step["recovery_sec"]))
+                group_steps.append(_make_recovery_step(2, step))
 
             # Signature: (iterations: int, workout_steps: list, step_order: int)
             steps.append(create_repeat_group(reps, group_steps, step_order))
             step_order += 1
+
         else:
-            # Unknown step type (or a plain steady-state session with no
-            # explicit structure) - treat it as one flat interval step.
+            # Unknown step type - treat it as one flat interval step.
             steps.append(create_interval_step(step_order, step.get("duration_sec", 1200)))
             step_order += 1
 
