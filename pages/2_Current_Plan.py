@@ -1,9 +1,8 @@
 """
-"Current Plan" page: lets the athlete set/update their overall goals, make a
-quick mid-week adjustment (injury, time off, etc.), and see the resulting
-plan synced to Garmin Connect.
+"Current Plan" page: lets the athlete set/update their overall goals and see
+the resulting plan synced to Garmin Connect.
 
-Both actions on this page follow the same pattern:
+This action follows this pattern:
   1. Load the week's EXISTING sessions from the database (so we know what's
      currently pushed to Garmin, including each session's "garmin_workout_id").
   2. Ask the plan generator for a new set of sessions.
@@ -22,7 +21,7 @@ import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from core import db  # noqa: E402
-from core.plan_generator import generate_week_plan, regenerate_partial_week, format_goal_aesthetically
+from core.plan_generator import generate_week_plan, format_goal_aesthetically
 from core.garmin_client import get_client, fetch_week_summary, sync_workouts
 
 st.title("📋 Current Plan & Adjustments")
@@ -50,87 +49,7 @@ elif saved_raw_notes:
 
 st.markdown("---")
 
-# --- 3. QUICK MID-WEEK ADJUSTMENTS ---
-st.subheader("🩹 Quick Adjustment (Mid-Week Issue)")
-st.caption("Need to adjust your current week due to an injury, sickness, or unexpected schedule conflict? Tell Claude what happened and your plan will update immediately.")
-
-with st.form("quick_adjustment_form"):
-    adj_reason = st.selectbox(
-        "Reason for adjustment",
-        ["injury", "time_off", "other"],
-        format_func=lambda x: {
-            "injury": "🩹 Injury / Niggle / Pain",
-            "time_off": "✈️ Time Off / Vacation / Busy",
-            "other": "⚡ General Adjustment"
-        }[x]
-    )
-    
-    col_dates1, col_dates2 = st.columns(2)
-    with col_dates1:
-        affected_start = st.date_input("Start date affected", value=date.today())
-    with col_dates2:
-        affected_end = st.date_input("End date affected", value=date.today() + timedelta(days=2))
-        
-    adj_notes = st.text_area(
-        "Notes for your coach",
-        placeholder="e.g. Left Achilles pain after yesterday's run. Need to rest or cross-train until Thursday."
-    )
-    
-    btn_adjust = st.form_submit_button("🚨 Regenerate Current Week", type="primary", use_container_width=True)
-
-if btn_adjust:
-    if not adj_notes.strip():
-        st.warning("Please enter a short note describing the issue.")
-    else:
-        with st.spinner("Adjusting your current week and syncing to Garmin..."):
-            try:
-                # Load what's currently saved/pushed for this week BEFORE we
-                # overwrite it - sync_workouts needs this to know which
-                # Garmin workout ids to delete.
-                existing_plan = db.get_plan(week_start) or {}
-                existing_sessions = existing_plan.get("sessions", [])
-
-                adjusted_data = regenerate_partial_week(
-                    profile=current,
-                    existing_sessions=existing_sessions,
-                    reason=adj_reason,
-                    affected_start=affected_start.isoformat(),
-                    affected_end=affected_end.isoformat(),
-                    notes=adj_notes
-                )
-                new_sessions = adjusted_data.get("sessions", [])
-
-                # Swap the Garmin calendar over to the new plan: delete the
-                # old plan's still-upcoming workouts, then push the new
-                # plan's. Only today-onward is touched, so days that have
-                # already happened this week are left alone. This stamps
-                # "garmin_workout_id" onto each newly pushed session.
-                garmin_client = get_client()
-                new_sessions = sync_workouts(
-                    garmin_client,
-                    old_sessions=existing_sessions,
-                    new_sessions=new_sessions,
-                    from_date=date.today(),
-                )
-                pushed_count = sum(1 for s in new_sessions if s.get("garmin_workout_id"))
-
-                # Save AFTER syncing, so the freshly-stamped garmin_workout_id
-                # values are what gets persisted - without this ordering,
-                # the next replan wouldn't know which workouts to delete.
-                db.save_plan(
-                    week_start,
-                    new_sessions,
-                    adjusted_data.get("rationale", "")
-                )
-
-                st.success(f"✅ Current week updated! Synced {pushed_count} workouts to Garmin.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error adjusting plan: {e}")
-
-st.markdown("---")
-
-# --- 4. OVERALL PLAN GOALS & PREFERENCES ---
+# --- 3. OVERALL PLAN GOALS & PREFERENCES ---
 st.subheader("🎯 Update Long-Term Goals & Schedule")
 st.caption("Change target races, target times, weekly run availability, or overall training strategy.")
 

@@ -289,7 +289,7 @@ def _make_effort_step(step_order: int, step: dict):
     if step.get("distance_m"):
         built = create_distance_interval_step(step["distance_m"], step_order=step_order)
     else:
-        built = create_interval_step(step_order, step.get("duration_sec", 300))
+        built = create_interval_step(step.get("duration_sec", 300), step_order=step_order)
 
     _apply_target(built, step)
 
@@ -316,7 +316,7 @@ def _make_recovery_step(step_order: int, step: dict):
     Returns:
         A single garminconnect recovery-step object.
     """
-    built = create_recovery_step(step_order, step.get("recovery_sec", 90))
+    built = create_recovery_step(step.get("recovery_sec", 90), step_order=step_order)
 
     if step.get("recovery_target_pace_sec_per_km"):
         _apply_pace_target(built, step["recovery_target_pace_sec_per_km"])
@@ -366,13 +366,13 @@ def _build_steps(session: dict):
         step_type = step.get("type")
 
         if step_type == "warmup":
-            built = create_warmup_step(step_order, step["duration_sec"])
+            built = create_warmup_step(step["duration_sec"], step_order=step_order)
             _apply_target(built, step)
             steps.append(built)
             step_order += 1
 
         elif step_type == "cooldown":
-            steps.append(create_cooldown_step(step_order, step["duration_sec"]))
+            steps.append(create_cooldown_step(step["duration_sec"], step_order=step_order))
             step_order += 1
 
         elif step_type == "run":
@@ -392,19 +392,19 @@ def _build_steps(session: dict):
                 group_steps.append(_make_recovery_step(2, step))
 
             # Signature: (iterations: int, workout_steps: list, step_order: int)
-            steps.append(create_repeat_group(reps, group_steps, step_order))
+            steps.append(create_repeat_group(reps, group_steps, step_order=step_order))
             step_order += 1
 
         else:
             # Unknown step type - treat it as one flat interval step.
-            steps.append(create_interval_step(step_order, step.get("duration_sec", 1200)))
+            steps.append(create_interval_step(step.get("duration_sec", 1200), step_order=step_order))
             step_order += 1
 
     if not steps:
         # No structure at all was provided - fall back to a single plain
         # step covering the whole planned session duration, so we always
         # upload *something* runnable rather than an empty workout.
-        steps.append(create_interval_step(1, session.get("duration_min", 30) * 60))
+        steps.append(create_interval_step(session.get("duration_min", 30) * 60, step_order=1))
 
     return steps
 
